@@ -1,4 +1,6 @@
-import { useState, useCallback } from 'react';
+import { useState, useEffect, useCallback } from 'react';
+import { useAuth } from '../context/AuthContext';
+import { apiIntegrado } from '../services/apiIntegrado';
 
 interface CartItem {
   id: number;
@@ -10,26 +12,31 @@ interface CartItem {
   kgQty?: number;
 }
 
-const catalog = [
-  { id: 1, name: 'Royal Canin Mini Adult 3kg', price: 12500, sku: '001' },
-  { id: 2, name: 'Pro Plan Puppy Small Breed 7.5kg', price: 28400, sku: '002' },
-  { id: 3, name: 'Pipeta Antipulgas (4 dosis)', price: 3200, sku: '003' },
-  { id: 4, name: 'Shampoo Premium Avena 500ml', price: 5600, sku: '004' },
-  { id: 5, name: 'Juguete Mordedor KONG L', price: 8900, sku: '005' },
-  { id: 6, name: 'NexGard Tabletas Antipulgas', price: 11200, sku: '006' },
-];
+interface Product {
+  id: number;
+  name: string;
+  price: number;
+  sku: string;
+  stock: number;
+  is_bulk: number | boolean;
+  isBulk?: number | boolean;
+  price_per_kg?: number;
+  pricePerKg?: number;
+  current_kg_stock?: number;
+  currentKgStock?: number;
+  category: string;
+  icon: string;
+}
 
-const bulkFoods = [
-  { id: 101, name: 'Royal Canin Puppy Mix', pricePerKg: 3200 },
-  { id: 102, name: 'Alimento Gato Mix', pricePerKg: 2800 },
-  { id: 103, name: 'Pro Plan Adultos Granel', pricePerKg: 4100 },
-];
+const getPricePerKg = (p: Product) => Number(p.pricePerKg ?? p.price_per_kg ?? 0);
+const getCurrentKgStock = (p: Product) => Number(p.currentKgStock ?? p.current_kg_stock ?? 0);
+const getIsBulk = (p: Product) => p.is_bulk === 1 || p.is_bulk === true || p.isBulk === 1 || p.isBulk === true;
 
 const paymentMethods = [
   { id: 'efectivo',      icon: 'payments',     label: 'Efectivo',     badge: '-10%', badgeColor: 'text-secondary' },
-  { id: 'debito',        icon: 'credit_card',   label: 'Débito',       badge: null,   badgeColor: '' },
+  { id: 'debito',        icon: 'credit_card',   label: 'Debito',       badge: null,   badgeColor: '' },
   { id: 'transferencia', icon: 'swap_horiz',    label: 'Transf.',      badge: '-10%', badgeColor: 'text-secondary' },
-  { id: 'credito',       icon: 'contactless',   label: 'Crédito',      badge: null,   badgeColor: '' },
+  { id: 'credito',       icon: 'contactless',   label: 'Credito',      badge: null,   badgeColor: '' },
 ];
 
 const INSTALLMENT_OPTIONS = [1, 2, 3, 4, 5, 6];
@@ -50,52 +57,85 @@ function paymentLabel(method: string | null, installments: number): string {
 const fmt = (n: number) => n.toLocaleString('es-AR', { style: 'currency', currency: 'ARS' });
 
 export default function NuevaVenta() {
+  const { token } = useAuth();
+  const [products, setProducts] = useState<Product[]>([]);
   const [search, setSearch] = useState('');
   const [cart, setCart] = useState<CartItem[]>([]);
   const [selectedPayment, setSelectedPayment] = useState<string | null>(null);
   const [installments, setInstallments] = useState(1);
-  const [bulkFood, setBulkFood] = useState('');
-  const [bulkQty, setBulkQty] = useState('');
   const [discountType, setDiscountType] = useState<'percent' | 'fixed'>('percent');
   const [discountValue, setDiscountValue] = useState('');
   const [showConfirm, setShowConfirm] = useState(false);
+  const [saleNumber, setSaleNumber] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [errorMsg, setErrorMsg] = useState('');
+
+  const [bulkSearch, setBulkSearch] = useState('');
+  const [bulkSelected, setBulkSelected] = useState<Product | null>(null);
+  const [bulkKg, setBulkKg] = useState('');
+  const [bulkGrams, setBulkGrams] = useState('');
+  const [showBulkResults, setShowBulkResults] = useState(false);
+
+  const [calcProduct, setCalcProduct] = useState<Product | null>(null);
+  const [calcSearch, setCalcSearch] = useState('');
+  const [calcAmount, setCalcAmount] = useState('');
+  const [showCalcResults, setShowCalcResults] = useState(false);
+
+  useEffect(() => {
+    apiIntegrado.getProducts(token).then(setProducts);
+  }, [token]);
+
+  const normalProducts = products.filter(p => !getIsBulk(p));
+  const bulkProducts = products.filter(p => getIsBulk(p));
 
   const filteredCatalog = search.length > 1
-    ? catalog.filter(p => p.name.toLowerCase().includes(search.toLowerCase()) || p.sku.includes(search))
+    ? normalProducts.filter(p =>
+        p.name.toLowerCase().includes(search.toLowerCase()) ||
+        p.sku.includes(search)
+      )
     : [];
 
-  const addToCart = (item: typeof catalog[0]) => {
+  const filteredBulk = bulkSearch.length > 0
+    ? bulkProducts.filter(p => p.name.toLowerCase().includes(bulkSearch.toLowerCase()))
+    : bulkProducts;
+
+  const filteredCalc = calcSearch.length > 0
+    ? bulkProducts.filter(p => p.name.toLowerCase().includes(calcSearch.toLowerCase()))
+    : bulkProducts;
+
+  const bulkTotalKg = (parseFloat(bulkKg) || 0) + (parseFloat(bulkGrams) || 0) / 1000;
+  const bulkTotalPrice = bulkSelected ? getPricePerKg(bulkSelected) * bulkTotalKg : 0;
+
+  const calcGrams = calcProduct && calcAmount
+    ? (parseFloat(calcAmount) / (getPricePerKg(calcProduct) || 1)) * 1000
+    : null;
+
+  const addToCart = (item: Product) => {
     setCart(prev => {
       const existing = prev.find(c => c.id === item.id);
       if (existing) return prev.map(c => c.id === item.id ? { ...c, qty: c.qty + 1 } : c);
-      return [...prev, { id: item.id, name: item.name, price: item.price, qty: 1 }];
+      return [...prev, { id: item.id, name: item.name, price: Number(item.price), qty: 1 }];
     });
     setSearch('');
   };
 
   const addBulk = useCallback(() => {
-    const food = bulkFoods.find(f => f.name === bulkFood);
-    const qty = parseFloat(bulkQty);
-    if (!food || !qty || qty <= 0) return;
+    if (!bulkSelected || bulkTotalKg <= 0) return;
+    const pricePerKg = getPricePerKg(bulkSelected);
     setCart(prev => [...prev, {
-      id: Date.now(),
-      name: food.name,
-      price: food.pricePerKg * qty,
+      id: bulkSelected.id,
+      name: bulkSelected.name,
+      price: pricePerKg * bulkTotalKg,
       qty: 1,
       isBulk: true,
-      pricePerKg: food.pricePerKg,
-      kgQty: qty,
+      pricePerKg,
+      kgQty: bulkTotalKg,
     }]);
-    setBulkFood('');
-    setBulkQty('');
-  }, [bulkFood, bulkQty]);
-
-  const handleBulkKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      addBulk();
-    }
-  };
+    setBulkSelected(null);
+    setBulkSearch('');
+    setBulkKg('');
+    setBulkGrams('');
+  }, [bulkSelected, bulkTotalKg]);
 
   const updateQty = (id: number, delta: number) => {
     setCart(prev => prev
@@ -106,49 +146,67 @@ export default function NuevaVenta() {
 
   const removeItem = (id: number) => setCart(prev => prev.filter(c => c.id !== id));
 
-  // --- Pricing calculations ---
   const subtotal = cart.reduce((acc, item) => acc + item.price * item.qty, 0);
-
   const discountRaw = parseFloat(discountValue) || 0;
   const manualDiscountAmount = discountValue
-    ? discountType === 'percent'
-      ? subtotal * (discountRaw / 100)
-      : discountRaw
+    ? discountType === 'percent' ? subtotal * (discountRaw / 100) : discountRaw
     : 0;
-
   const netSubtotal = Math.max(0, subtotal - manualDiscountAmount);
   const surcharge = paymentSurcharge(selectedPayment, installments);
   const paymentAdjAmount = netSubtotal * surcharge;
   const finalTotal = netSubtotal + paymentAdjAmount;
 
-  const finishSale = () => {
+  const finishSale = async () => {
     if (cart.length === 0 || !selectedPayment) return;
-    setShowConfirm(true);
-    setTimeout(() => {
-      setShowConfirm(false);
-      setCart([]);
-      setSelectedPayment(null);
-      setInstallments(1);
-      setDiscountValue('');
-    }, 3000);
+    setSaving(true);
+    setErrorMsg('');
+
+    const items = cart.map(item => ({
+      productId: item.id,
+      quantity: item.isBulk ? 0 : item.qty,
+      kgQuantity: item.isBulk ? (item.kgQty ?? 0) : 0,
+      price: item.isBulk ? (item.pricePerKg ?? 0) : item.price,
+    }));
+
+    const result = await apiIntegrado.createSale(token, {
+      items,
+      totalAmount: finalTotal,
+      paymentMethod: selectedPayment,
+      installments,
+      discountType: discountValue ? discountType : null,
+      discountValue: discountValue ? discountRaw : null,
+    });
+
+    setSaving(false);
+
+    if (result) {
+      setSaleNumber(result.saleNumber || result.id || '');
+      setShowConfirm(true);
+      setTimeout(() => {
+        setShowConfirm(false);
+        setCart([]);
+        setSelectedPayment(null);
+        setInstallments(1);
+        setDiscountValue('');
+        setSaleNumber('');
+      }, 3000);
+    } else {
+      setErrorMsg('Error al registrar la venta. Intenta de nuevo.');
+    }
   };
 
   return (
     <div className="flex gap-gutter p-lg h-[calc(100vh-4rem)] overflow-hidden">
-      {/* ── LEFT SIDE ── */}
-      <div className="flex-grow flex flex-col gap-lg overflow-hidden">
+      <div className="flex-grow flex flex-col gap-lg overflow-hidden overflow-y-auto custom-scrollbar">
 
-        {/* Search */}
         <section className="bg-surface border border-outline-variant/30 rounded-xl p-xl flex flex-col items-center text-center shadow-sm">
           <div className="w-full max-w-2xl">
             <h2 className="text-headline-md font-bold text-primary mb-md">Nueva Venta</h2>
             <div className="relative group">
-              <span className="absolute left-4 top-1/2 -translate-y-1/2 material-symbols-outlined text-outline group-focus-within:text-primary">
-                barcode_scanner
-              </span>
+              <span className="absolute left-4 top-1/2 -translate-y-1/2 material-symbols-outlined text-outline group-focus-within:text-primary">barcode_scanner</span>
               <input
                 className="w-full pl-12 pr-4 py-5 bg-surface-container-low border-2 border-outline-variant/40 rounded-xl text-body-lg focus:outline-none focus:border-primary focus:ring-4 focus:ring-primary/10 transition-all placeholder:text-outline/60"
-                placeholder="Buscar por código, nombre o marca..."
+                placeholder="Buscar por codigo, nombre o marca..."
                 value={search}
                 onChange={e => setSearch(e.target.value)}
                 autoFocus
@@ -162,65 +220,197 @@ export default function NuevaVenta() {
                     onClick={() => addToCart(item)}
                     className="w-full flex justify-between items-center px-md py-sm hover:bg-secondary-container/20 transition-colors border-b border-outline-variant/10 last:border-0"
                   >
-                    <span className="text-body-md font-bold">{item.name}</span>
-                    <span className="text-label-md text-primary font-bold">{fmt(item.price)}</span>
+                    <div>
+                      <span className="text-body-md font-bold">{item.name}</span>
+                      <span className="text-caption text-on-surface-variant ml-sm">Stock: {item.stock}</span>
+                    </div>
+                    <span className="text-label-md text-primary font-bold">{fmt(Number(item.price))}</span>
                   </button>
                 ))}
               </div>
             )}
-            <p className="mt-base text-on-surface-variant text-caption">Buscar por código escrito manual o por descripción del producto.</p>
           </div>
         </section>
 
-        {/* Bulk food */}
         <section className="bg-tertiary-fixed/20 border border-outline-variant/20 rounded-xl p-lg">
           <div className="flex items-center gap-sm mb-md">
             <span className="material-symbols-outlined text-tertiary">scale</span>
             <h3 className="text-headline-md font-bold text-tertiary">Alimento por peso</h3>
           </div>
-          <div className="grid grid-cols-12 gap-md items-end">
-            <div className="col-span-7">
+
+          <div className="space-y-md">
+            <div className="relative">
+              <label className="block text-label-md text-on-surface-variant mb-xs">Buscar alimento</label>
+              <div className="relative">
+                <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-on-surface-variant" style={{ fontSize: '18px' }}>search</span>
+                <input
+                  className="w-full pl-10 pr-4 py-3 bg-white border border-outline-variant rounded-lg focus:ring-2 focus:ring-tertiary/20 focus:border-tertiary transition-all text-body-md"
+                  placeholder="Escribi el nombre del alimento..."
+                  value={bulkSearch}
+                  onChange={e => { setBulkSearch(e.target.value); setShowBulkResults(true); setBulkSelected(null); }}
+                  onFocus={() => setShowBulkResults(true)}
+                />
+              </div>
+              {showBulkResults && filteredBulk.length > 0 && (
+                <div className="absolute z-10 w-full mt-1 bg-white border border-outline-variant/30 rounded-xl shadow-lg overflow-hidden">
+                  {filteredBulk.map(p => (
+                    <button
+                      key={p.id}
+                      onClick={() => { setBulkSelected(p); setBulkSearch(p.name); setShowBulkResults(false); }}
+                      className="w-full flex justify-between items-center px-md py-sm hover:bg-tertiary/10 transition-colors border-b border-outline-variant/10 last:border-0 text-left"
+                    >
+                      <div>
+                        <span className="text-body-md font-bold">{p.name}</span>
+                        <span className="text-caption text-on-surface-variant block">Stock: {getCurrentKgStock(p).toFixed(2)} kg</span>
+                      </div>
+                      <span className="text-label-md text-tertiary font-bold">{fmt(getPricePerKg(p))}/kg</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {bulkSelected && (
+              <div className="bg-white rounded-lg p-md border border-tertiary/20">
+                <p className="text-label-md font-bold text-tertiary mb-sm">{bulkSelected.name} — {fmt(getPricePerKg(bulkSelected))}/kg</p>
+                <div className="grid grid-cols-3 gap-md items-end">
+                  <div>
+                    <label className="block text-caption text-on-surface-variant mb-xs">Kilos</label>
+                    <input
+                      className="w-full px-md py-2 border border-outline-variant rounded-lg text-body-md font-bold text-right focus:ring-2 focus:ring-tertiary/20 focus:border-tertiary"
+                      placeholder="0"
+                      type="number"
+                      min="0"
+                      step="1"
+                      value={bulkKg}
+                      onChange={e => setBulkKg(e.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-caption text-on-surface-variant mb-xs">Gramos</label>
+                    <input
+                      className="w-full px-md py-2 border border-outline-variant rounded-lg text-body-md font-bold text-right focus:ring-2 focus:ring-tertiary/20 focus:border-tertiary"
+                      placeholder="0"
+                      type="number"
+                      min="0"
+                      step="50"
+                      value={bulkGrams}
+                      onChange={e => setBulkGrams(e.target.value)}
+                    />
+                  </div>
+                  <button
+                    onClick={addBulk}
+                    disabled={bulkTotalKg <= 0}
+                    className="py-2 bg-tertiary text-white rounded-lg font-bold flex items-center justify-center gap-xs hover:opacity-90 transition-all shadow-sm active:scale-95 disabled:opacity-40"
+                  >
+                    <span className="material-symbols-outlined">add</span>
+                    Añadir
+                  </button>
+                </div>
+                {bulkTotalKg > 0 && (
+                  <div className="mt-sm flex justify-between text-caption text-on-surface-variant">
+                    <span>Total: {bulkTotalKg >= 1 ? `${bulkTotalKg.toFixed(3)} kg` : `${(bulkTotalKg * 1000).toFixed(0)} gr`}</span>
+                    <span className="font-bold text-tertiary">{fmt(bulkTotalPrice)}</span>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </section>
+
+        <section className="bg-secondary/5 border border-secondary/20 rounded-xl p-lg">
+          <div className="flex items-center gap-sm mb-md">
+            <span className="material-symbols-outlined text-secondary">calculate</span>
+            <h3 className="text-headline-md font-bold text-secondary">Calculadora por monto</h3>
+          </div>
+          <p className="text-caption text-on-surface-variant mb-md">Ingresa el monto que quiere gastar el cliente y te dice cuantos gramos se lleva.</p>
+
+          <div className="space-y-md">
+            <div className="relative">
               <label className="block text-label-md text-on-surface-variant mb-xs">Alimento</label>
-              <select
-                className="w-full px-md py-3 bg-white border border-outline-variant rounded-lg focus:ring-2 focus:ring-tertiary/20 focus:border-tertiary transition-all text-body-md"
-                value={bulkFood}
-                onChange={e => setBulkFood(e.target.value)}
-              >
-                <option value="">Seleccionar alimento...</option>
-                {bulkFoods.map(f => (
-                  <option key={f.id} value={f.name}>{f.name} — {fmt(f.pricePerKg)}/kg</option>
-                ))}
-              </select>
+              <div className="relative">
+                <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-on-surface-variant" style={{ fontSize: '18px' }}>search</span>
+                <input
+                  className="w-full pl-10 pr-4 py-3 bg-white border border-outline-variant rounded-lg text-body-md"
+                  placeholder="Buscar alimento..."
+                  value={calcSearch}
+                  onChange={e => { setCalcSearch(e.target.value); setShowCalcResults(true); setCalcProduct(null); }}
+                  onFocus={() => setShowCalcResults(true)}
+                />
+              </div>
+              {showCalcResults && filteredCalc.length > 0 && (
+                <div className="absolute z-10 w-full mt-1 bg-white border border-outline-variant/30 rounded-xl shadow-lg overflow-hidden">
+                  {filteredCalc.map(p => (
+                    <button
+                      key={p.id}
+                      onClick={() => { setCalcProduct(p); setCalcSearch(p.name); setShowCalcResults(false); }}
+                      className="w-full flex justify-between items-center px-md py-sm hover:bg-secondary/10 transition-colors border-b border-outline-variant/10 last:border-0 text-left"
+                    >
+                      <span className="text-body-md font-bold">{p.name}</span>
+                      <span className="text-label-md text-secondary font-bold">{fmt(getPricePerKg(p))}/kg</span>
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
-            <div className="col-span-3">
-              <label className="block text-label-md text-on-surface-variant mb-xs">Cantidad (kg)</label>
-              <input
-                className="w-full px-4 py-3 bg-white border border-outline-variant rounded-lg focus:ring-2 focus:ring-tertiary/20 focus:border-tertiary transition-all font-bold text-right"
-                placeholder="0.00"
-                step="0.1"
-                type="number"
-                value={bulkQty}
-                onChange={e => setBulkQty(e.target.value)}
-                onKeyDown={handleBulkKeyDown}
-              />
-            </div>
-            <div className="col-span-2">
-              <button
-                onClick={addBulk}
-                className="w-full py-3 bg-tertiary text-white rounded-lg font-bold flex items-center justify-center gap-xs hover:opacity-90 transition-all shadow-sm active:scale-95"
-              >
-                <span className="material-symbols-outlined">add</span>
-                Añadir
-              </button>
-            </div>
+
+            {calcProduct && (
+              <div className="bg-white rounded-lg p-md border border-secondary/20">
+                <div className="flex gap-md items-end">
+                  <div className="flex-grow">
+                    <label className="block text-caption text-on-surface-variant mb-xs">Monto ($)</label>
+                    <div className="relative">
+                      <span className="absolute left-3 top-1/2 -translate-y-1/2 font-bold text-on-surface-variant">$</span>
+                      <input
+                        className="w-full pl-8 pr-4 py-2 border border-outline-variant rounded-lg text-body-md font-bold"
+                        placeholder="0"
+                        type="number"
+                        min="0"
+                        value={calcAmount}
+                        onChange={e => setCalcAmount(e.target.value)}
+                      />
+                    </div>
+                  </div>
+                  {calcGrams !== null && calcGrams > 0 && (
+                    <div className="flex-grow bg-secondary/10 rounded-lg p-sm text-center">
+                      <p className="text-caption text-on-surface-variant">Se lleva</p>
+                      <p className="text-headline-md font-bold text-secondary">
+                        {calcGrams >= 1000 ? `${(calcGrams / 1000).toFixed(2)} kg` : `${calcGrams.toFixed(0)} gr`}
+                      </p>
+                    </div>
+                  )}
+                </div>
+                {calcGrams !== null && calcGrams > 0 && (
+                  <button
+                    onClick={() => {
+                      const kgQty = calcGrams / 1000;
+                      const pricePerKg = getPricePerKg(calcProduct);
+                      setCart(prev => [...prev, {
+                        id: calcProduct.id,
+                        name: calcProduct.name,
+                        price: pricePerKg * kgQty,
+                        qty: 1,
+                        isBulk: true,
+                        pricePerKg,
+                        kgQty,
+                      }]);
+                      setCalcAmount('');
+                      setCalcSearch('');
+                      setCalcProduct(null);
+                    }}
+                    className="w-full mt-sm py-2 bg-secondary text-white rounded-lg font-bold text-caption hover:opacity-90 transition-all active:scale-95"
+                  >
+                    Agregar al carrito
+                  </button>
+                )}
+              </div>
+            )}
           </div>
         </section>
       </div>
 
-      {/* ── RIGHT SIDE: Cart + Payment ── */}
       <div className="w-96 flex flex-col gap-md flex-shrink-0 overflow-y-auto custom-scrollbar">
 
-        {/* Cart */}
         <div className="bg-surface-container border border-outline-variant/30 rounded-xl flex flex-col overflow-hidden shadow-sm" style={{ minHeight: '280px', maxHeight: '380px' }}>
           <div className="p-md border-b border-outline-variant/20 flex justify-between items-center bg-white">
             <h3 className="text-headline-md font-bold text-primary">Carrito</h3>
@@ -233,7 +423,7 @@ export default function NuevaVenta() {
             {cart.length === 0 ? (
               <div className="flex flex-col items-center justify-center h-full text-center opacity-40 p-md">
                 <span className="material-symbols-outlined" style={{ fontSize: '56px' }}>shopping_basket</span>
-                <p className="text-body-md italic mt-sm">El carrito está vacío</p>
+                <p className="text-body-md italic mt-sm">El carrito esta vacio</p>
               </div>
             ) : (
               <div className="divide-y divide-outline-variant/10">
@@ -243,20 +433,22 @@ export default function NuevaVenta() {
                       <p className="text-label-md font-bold truncate">{item.name}</p>
                       {item.isBulk && item.pricePerKg && item.kgQty ? (
                         <p className="text-caption text-tertiary font-bold">
-                          {fmt(item.pricePerKg)}/kg × {item.kgQty}kg
+                          {item.kgQty >= 1 ? `${item.kgQty.toFixed(3)} kg` : `${(item.kgQty * 1000).toFixed(0)} gr`} x {fmt(item.pricePerKg)}/kg
                         </p>
                       ) : (
                         <p className="text-caption text-on-surface-variant">{fmt(item.price)} c/u</p>
                       )}
                     </div>
                     <div className="flex items-center gap-xs flex-shrink-0">
-                      <button onClick={() => updateQty(item.id, -1)} className="w-5 h-5 rounded border border-outline-variant flex items-center justify-center hover:bg-surface-variant">
-                        <span className="material-symbols-outlined" style={{ fontSize: '12px' }}>remove</span>
-                      </button>
-                      <span className="w-5 text-center text-label-md font-bold">{item.qty}</span>
-                      <button onClick={() => updateQty(item.id, 1)} className="w-5 h-5 rounded border border-outline-variant flex items-center justify-center hover:bg-surface-variant">
-                        <span className="material-symbols-outlined" style={{ fontSize: '12px' }}>add</span>
-                      </button>
+                      {!item.isBulk && <>
+                        <button onClick={() => updateQty(item.id, -1)} className="w-5 h-5 rounded border border-outline-variant flex items-center justify-center hover:bg-surface-variant">
+                          <span className="material-symbols-outlined" style={{ fontSize: '12px' }}>remove</span>
+                        </button>
+                        <span className="w-5 text-center text-label-md font-bold">{item.qty}</span>
+                        <button onClick={() => updateQty(item.id, 1)} className="w-5 h-5 rounded border border-outline-variant flex items-center justify-center hover:bg-surface-variant">
+                          <span className="material-symbols-outlined" style={{ fontSize: '12px' }}>add</span>
+                        </button>
+                      </>}
                       <button onClick={() => removeItem(item.id)} className="w-5 h-5 rounded flex items-center justify-center text-error hover:bg-error-container/20 ml-xs">
                         <span className="material-symbols-outlined" style={{ fontSize: '12px' }}>close</span>
                       </button>
@@ -271,7 +463,6 @@ export default function NuevaVenta() {
           </div>
         </div>
 
-        {/* Pricing Summary */}
         <div className="bg-white border border-outline-variant/20 rounded-xl p-md space-y-xs shadow-sm">
           <div className="flex justify-between text-body-md text-on-surface-variant">
             <span>Subtotal</span><span>{fmt(subtotal)}</span>
@@ -297,7 +488,6 @@ export default function NuevaVenta() {
           )}
         </div>
 
-        {/* Manual Discount */}
         <div className="bg-surface border border-outline-variant/20 rounded-xl p-md shadow-sm">
           <div className="flex items-center gap-sm mb-sm">
             <span className="material-symbols-outlined text-on-surface-variant" style={{ fontSize: '18px' }}>sell</span>
@@ -307,7 +497,6 @@ export default function NuevaVenta() {
             <button
               onClick={() => setDiscountType(discountType === 'percent' ? 'fixed' : 'percent')}
               className="flex-shrink-0 w-10 h-10 border border-outline-variant rounded-lg flex items-center justify-center font-bold text-label-md hover:bg-surface-container transition-all text-on-surface-variant"
-              title="Cambiar tipo de descuento"
             >
               {discountType === 'percent' ? '%' : '$'}
             </button>
@@ -323,24 +512,15 @@ export default function NuevaVenta() {
               />
             </div>
             {discountValue && (
-              <button
-                onClick={() => setDiscountValue('')}
-                className="flex-shrink-0 w-10 h-10 border border-error/30 rounded-lg flex items-center justify-center text-error hover:bg-error-container/20 transition-all"
-              >
+              <button onClick={() => setDiscountValue('')} className="flex-shrink-0 w-10 h-10 border border-error/30 rounded-lg flex items-center justify-center text-error hover:bg-error-container/20 transition-all">
                 <span className="material-symbols-outlined" style={{ fontSize: '16px' }}>close</span>
               </button>
             )}
           </div>
-          {manualDiscountAmount > 0 && (
-            <p className="text-caption text-secondary font-bold mt-xs">
-              Ahorro: {fmt(manualDiscountAmount)} {discountType === 'percent' ? `(${discountValue}%)` : ''}
-            </p>
-          )}
         </div>
 
-        {/* Payment Methods */}
         <div className="bg-surface border border-outline-variant/30 rounded-xl p-md shadow-sm">
-          <p className="text-label-md text-on-surface-variant mb-md uppercase tracking-wide">Método de Pago</p>
+          <p className="text-label-md text-on-surface-variant mb-md uppercase tracking-wide">Metodo de Pago</p>
           <div className="grid grid-cols-2 gap-sm">
             {paymentMethods.map(pm => (
               <button
@@ -363,7 +543,6 @@ export default function NuevaVenta() {
             ))}
           </div>
 
-          {/* Installments (credit card only) */}
           {selectedPayment === 'credito' && (
             <div className="mt-md">
               <p className="text-label-md text-on-surface-variant mb-sm">Cuotas</p>
@@ -373,36 +552,34 @@ export default function NuevaVenta() {
                     key={n}
                     onClick={() => setInstallments(n)}
                     className={`py-sm rounded-lg text-label-md font-bold border transition-all ${
-                      installments === n
-                        ? 'bg-primary text-white border-primary'
-                        : 'border-outline-variant text-on-surface-variant hover:border-primary hover:text-primary'
+                      installments === n ? 'bg-primary text-white border-primary' : 'border-outline-variant text-on-surface-variant hover:border-primary hover:text-primary'
                     }`}
                   >
                     {n}x
                   </button>
                 ))}
               </div>
-              <p className="text-caption text-on-surface-variant mt-xs">
-                {installments === 1 ? '1 cuota: +10% sobre el total' : `${installments} cuotas: +30% sobre el total`}
-              </p>
             </div>
           )}
 
+          {errorMsg && <p className="text-error text-caption mt-sm">{errorMsg}</p>}
+
           <button
             onClick={finishSale}
-            disabled={cart.length === 0 || !selectedPayment}
+            disabled={cart.length === 0 || !selectedPayment || saving}
             className="w-full mt-md py-4 bg-primary text-white rounded-lg text-headline-md font-bold flex items-center justify-center gap-sm hover:opacity-90 transition-all active:scale-95 shadow-lg disabled:opacity-40 disabled:cursor-not-allowed"
           >
-            Finalizar Venta
+            {saving ? 'Registrando...' : 'Finalizar Venta'}
           </button>
         </div>
       </div>
 
-      {/* Success Toast */}
       {showConfirm && (
         <div className="fixed bottom-lg right-lg bg-primary text-white px-lg py-base rounded-xl shadow-2xl flex items-center gap-base z-50">
           <span className="material-symbols-outlined">check_circle</span>
-          <span className="text-label-md font-bold">Venta registrada con éxito</span>
+          <span className="text-label-md font-bold">
+            {saleNumber ? `Venta ${saleNumber} registrada con exito` : 'Venta registrada con exito'}
+          </span>
         </div>
       )}
     </div>

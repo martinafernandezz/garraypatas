@@ -1,11 +1,13 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
+import { apiIntegrado } from '..//services/apiIntegrado'; 
 
 export default function Ajustes() {
-  const { user, createUser, updateUser, updatePassword, users } = useAuth();
+
+const { user, token, updateUser, updatePassword } = useAuth();
+const [dbUsers, setDbUsers] = useState<any[]>([]);
   const [activeTab, setActiveTab] = useState<'perfil' | 'nuevo'>('perfil');
   const [isEditing, setIsEditing] = useState(false);
-
   const [editForm, setEditForm] = useState({
     username: user?.username || '',
     fullName: user?.fullName || '',
@@ -24,12 +26,20 @@ export default function Ajustes() {
     email: '',
     password: '',
     confirmPassword: '',
+    
   });
 
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
   const [pwdError, setPwdError] = useState('');
   const [pwdSuccess, setPwdSuccess] = useState('');
+
+  useEffect(() => {
+  const savedToken = localStorage.getItem('garra_auth_token');
+  if (savedToken) {
+    apiIntegrado.getUsers(savedToken).then(setDbUsers);
+  }
+}, []);
 
   const handleEditChange = (field: keyof typeof editForm) => (e: React.ChangeEvent<HTMLInputElement>) => {
     setEditForm(prev => ({ ...prev, [field]: e.target.value }));
@@ -93,39 +103,41 @@ export default function Ajustes() {
     setTimeout(() => setPwdSuccess(''), 3000);
   };
 
-  const handleNewSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    setError('');
-    setSuccess('');
+  const handleNewSubmit = async (e: React.FormEvent) => {
+  e.preventDefault();
+  setError('');
+  setSuccess('');
 
-    if (!newForm.username.trim() || !newForm.fullName.trim() || !newForm.email.trim() || !newForm.password) {
-      setError('Complete todos los campos');
-      return;
-    }
-    if (newForm.password !== newForm.confirmPassword) {
-      setError('Las contraseñas no coinciden');
-      return;
-    }
-    if (newForm.password.length < 6) {
-      setError('La contraseña debe tener al menos 6 caracteres');
-      return;
-    }
+  if (!newForm.username.trim() || !newForm.fullName.trim() || !newForm.email.trim() || !newForm.password) {
+    setError('Complete todos los campos');
+    return;
+  }
+  if (newForm.password !== newForm.confirmPassword) {
+    setError('Las contraseñas no coinciden');
+    return;
+  }
+  if (newForm.password.length < 6) {
+    setError('La contraseña debe tener al menos 6 caracteres');
+    return;
+  }
 
-    const ok = createUser({
-      username: newForm.username.trim(),
-      fullName: newForm.fullName.trim(),
-      email: newForm.email.trim(),
-      password: newForm.password,
-    });
+  const result = await apiIntegrado.createUser(token, {
+    username: newForm.username.trim(),
+    fullName: newForm.fullName.trim(),
+    email: newForm.email.trim(),
+    password: newForm.password,
+    role: 'admin',
+  });
 
-    if (!ok) {
-      setError('El nombre de usuario ya existe');
-      return;
-    }
-
-    setSuccess('Usuario administrador creado con éxito');
+  if (result) {
+    setSuccess('Usuario creado con éxito');
     setNewForm({ username: '', fullName: '', email: '', password: '', confirmPassword: '' });
-  };
+    const updated = await apiIntegrado.getUsers(token);
+    setDbUsers(updated);
+  } else {
+    setError('Error al crear usuario. El nombre de usuario o email ya existe.');
+  }
+};
 
   const inputCls = 'w-full bg-background border border-secondary/20 rounded-lg p-base text-body-md focus:outline-none focus:border-primary focus:ring-2 focus:ring-primary/10 transition-all';
 
@@ -334,20 +346,20 @@ export default function Ajustes() {
           <div className="bg-surface p-lg rounded-xl border border-outline-variant/30 shadow-sm">
             <h4 className="text-label-md font-bold text-primary mb-sm">Usuarios del Sistema</h4>
             <div className="space-y-xs">
-              {users.map(u => (
-                <div key={u.id} className="flex items-center gap-sm p-sm bg-surface-container-low rounded-lg border border-outline-variant/10">
-                  <div className="w-8 h-8 rounded-full bg-primary-container flex items-center justify-center text-white font-bold text-label-md">
-                    {u.fullName.charAt(0).toUpperCase()}
-                  </div>
-                  <div className="flex-grow">
-                    <p className="text-label-md font-bold">{u.fullName}</p>
-                    <p className="text-caption text-on-surface-variant">{u.username} · {u.email}</p>
-                  </div>
-                  <span className="px-sm py-xs bg-secondary-container/30 text-secondary text-caption font-bold rounded-full">
-                    {u.role === 'admin' ? 'Admin' : u.role}
-                  </span>
-                </div>
-              ))}
+              {dbUsers.map(u => (
+  <div key={u.id} className="flex items-center gap-sm p-sm bg-surface-container-low rounded-lg border border-outline-variant/10">
+    <div className="w-8 h-8 rounded-full bg-primary-container flex items-center justify-center text-white font-bold text-label-md">
+      {(u.full_name || u.username).charAt(0).toUpperCase()}
+    </div>
+    <div className="flex-grow">
+      <p className="text-label-md font-bold">{u.full_name}</p>
+      <p className="text-caption text-on-surface-variant">{u.username} · {u.email}</p>
+    </div>
+    <span className="px-sm py-xs bg-secondary-container/30 text-secondary text-caption font-bold rounded-full">
+      {u.role === 'admin' ? 'Admin' : u.role}
+    </span>
+  </div>
+))}
             </div>
           </div>
         </div>

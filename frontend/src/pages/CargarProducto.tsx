@@ -1,4 +1,6 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
+import { useAuth } from '../context/AuthContext';
+import { apiIntegrado } from '../services/apiIntegrado';
 
 type ProductTab = 'normal' | 'peso';
 
@@ -18,20 +20,22 @@ interface PesoForm {
   bolsaPrice: string;
   costPerKg: string;
   profitPerKgPercent: string;
+  kgPerBolsa: string;
 }
 
+const EMPTY_NORMAL: NormalForm = { name: '', sku: '', category: '', purchasePrice: '', profitPercent: '', initialStock: '' };
+const EMPTY_PESO: PesoForm = { name: '', sku: '', category: '', bolsaPrice: '', costPerKg: '', profitPerKgPercent: '', kgPerBolsa: '' };
+
 export default function CargarProducto() {
+  const { token } = useAuth();
   const [tab, setTab] = useState<ProductTab>('normal');
-
-  const [normalForm, setNormalForm] = useState<NormalForm>({
-    name: '', sku: '', category: '', purchasePrice: '', profitPercent: '', initialStock: '',
-  });
-
-  const [pesoForm, setPesoForm] = useState<PesoForm>({
-    name: '', sku: '', category: '', bolsaPrice: '', costPerKg: '', profitPerKgPercent: '',
-  });
-
+  const [categories, setCategories] = useState<string[]>([]);
+  const [normalForm, setNormalForm] = useState<NormalForm>(EMPTY_NORMAL);
+  const [pesoForm, setPesoForm] = useState<PesoForm>(EMPTY_PESO);
   const [showToast, setShowToast] = useState(false);
+  const [toastMsg, setToastMsg] = useState('Producto guardado con éxito');
+  const [toastError, setToastError] = useState(false);
+  const [loading, setLoading] = useState(false);
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Normal form derived values
@@ -44,34 +48,90 @@ export default function CargarProducto() {
   const profitKgPct = parseFloat(pesoForm.profitPerKgPercent) || 0;
   const salePriceKg = costKg > 0 && profitKgPct > 0 ? costKg * (1 + profitKgPct / 100) : null;
 
+  useEffect(() => {
+    apiIntegrado.getCategories(token).then((data: any[]) => {
+      if (data && data.length > 0) {
+        setCategories(data.map((c: any) => c.name));
+      }
+    });
+  }, [token]);
+
   const changeNormal = (field: keyof NormalForm) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
     setNormalForm(prev => ({ ...prev, [field]: e.target.value }));
 
   const changePeso = (field: keyof PesoForm) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
     setPesoForm(prev => ({ ...prev, [field]: e.target.value }));
 
-  const showSuccess = () => {
+  const showNotification = (msg: string, error = false) => {
+    setToastMsg(msg);
+    setToastError(error);
     setShowToast(true);
     if (toastTimer.current) clearTimeout(toastTimer.current);
     toastTimer.current = setTimeout(() => setShowToast(false), 3000);
   };
 
-  const handleNormalSubmit = (e: React.FormEvent) => {
+  const handleNormalSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    showSuccess();
-    setNormalForm({ name: '', sku: '', category: '', purchasePrice: '', profitPercent: '', initialStock: '' });
+    setLoading(true);
+    try {
+      const result = await apiIntegrado.createProduct(token, {
+        name: normalForm.name,
+        sku: normalForm.sku,
+        category: normalForm.category,
+        price: salePrice ?? cost,
+        stock: parseInt(normalForm.initialStock) || 0,
+        maxStock: 50,
+        icon: 'nutrition',
+        is_bulk: false,
+      });
+
+      if (result) {
+        showNotification('Producto guardado con éxito');
+        setNormalForm(EMPTY_NORMAL);
+      } else {
+        showNotification('Error al guardar el producto', true);
+      }
+    } catch {
+      showNotification('Error al guardar el producto', true);
+    } finally {
+      setLoading(false);
+    }
   };
 
-  const handlePesoSubmit = (e: React.FormEvent) => {
+  const handlePesoSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    showSuccess();
-    setPesoForm({ name: '', sku: '', category: '', bolsaPrice: '', costPerKg: '', profitPerKgPercent: '' });
+    setLoading(true);
+    try {
+      const result = await apiIntegrado.createProduct(token, {
+        name: pesoForm.name,
+        sku: pesoForm.sku,
+        category: pesoForm.category,
+        price: 0,
+        stock: 0,
+        maxStock: 0,
+        icon: 'nutrition',
+        isBulk: true,
+        pricePerKg: salePriceKg ?? costKg,
+        initialKgStock: parseFloat(pesoForm.kgPerBolsa) || 0,
+      });
+
+      if (result) {
+        showNotification('Producto por peso guardado con éxito');
+        setPesoForm(EMPTY_PESO);
+      } else {
+        showNotification('Error al guardar el producto', true);
+      }
+    } catch {
+      showNotification('Error al guardar el producto', true);
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleDiscard = () => {
     if (confirm('¿Está seguro de descartar los cambios?')) {
-      if (tab === 'normal') setNormalForm({ name: '', sku: '', category: '', purchasePrice: '', profitPercent: '', initialStock: '' });
-      else setPesoForm({ name: '', sku: '', category: '', bolsaPrice: '', costPerKg: '', profitPerKgPercent: '' });
+      if (tab === 'normal') setNormalForm(EMPTY_NORMAL);
+      else setPesoForm(EMPTY_PESO);
     }
   };
 
@@ -80,10 +140,7 @@ export default function CargarProducto() {
   const categorySelect = (value: string, onChange: (e: React.ChangeEvent<HTMLSelectElement>) => void) => (
     <select className={inputCls + ' appearance-none'} value={value} onChange={onChange}>
       <option value="" disabled>Seleccione una categoría</option>
-      <option value="alimento">Alimentos y Nutrición</option>
-      <option value="farmacia">Farmacia Veterinaria</option>
-      <option value="accesorios">Accesorios y Paseo</option>
-      <option value="higiene">Higiene y Estética</option>
+      {categories.map(c => <option key={c} value={c}>{c}</option>)}
     </select>
   );
 
@@ -119,7 +176,7 @@ export default function CargarProducto() {
       <div className="bg-surface p-lg rounded-xl border border-outline-variant/30 shadow-sm relative overflow-hidden">
         <div className="absolute top-0 right-0 w-64 h-64 bg-tertiary/5 rounded-full -mr-32 -mt-32 pointer-events-none" />
 
-        {/* ── NORMAL PRODUCT FORM ── */}
+        {/* NORMAL PRODUCT FORM */}
         {tab === 'normal' && (
           <form className="relative z-10 space-y-md" onSubmit={handleNormalSubmit}>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-gutter">
@@ -205,15 +262,15 @@ export default function CargarProducto() {
 
             <div className="flex flex-col sm:flex-row justify-end gap-md mt-lg pt-lg border-t border-outline-variant/20">
               <button type="button" onClick={handleDiscard} className="px-lg py-sm rounded-lg border border-secondary text-secondary font-bold text-body-md hover:bg-secondary/5 transition-all active:scale-95">Descartar</button>
-              <button type="submit" className="px-lg py-sm rounded-lg bg-primary-container text-white font-bold text-body-md hover:shadow-lg transition-all active:scale-95 flex items-center justify-center gap-base">
+              <button type="submit" disabled={loading} className="px-lg py-sm rounded-lg bg-primary-container text-white font-bold text-body-md hover:shadow-lg transition-all active:scale-95 flex items-center justify-center gap-base disabled:opacity-60">
                 <span className="material-symbols-outlined" style={{ fontVariationSettings: "'FILL' 1" }}>save</span>
-                Guardar Producto
+                {loading ? 'Guardando...' : 'Guardar Producto'}
               </button>
             </div>
           </form>
         )}
 
-        {/* ── BULK / WEIGHT PRODUCT FORM ── */}
+        {/* BULK / WEIGHT PRODUCT FORM */}
         {tab === 'peso' && (
           <form className="relative z-10 space-y-md" onSubmit={handlePesoSubmit}>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-gutter">
@@ -233,7 +290,11 @@ export default function CargarProducto() {
 
               <div className="space-y-base">
                 <label className="block text-label-md font-bold text-primary">Categoría</label>
-                {categorySelect(pesoForm.category, changePeso('category'))}
+                <select className={inputCls + ' appearance-none'} value={pesoForm.category} onChange={changePeso('category')}>
+  <option value="" disabled>Seleccione una categoría</option>
+  <option value="Alimentos Perros">Alimentos Perros</option>
+  <option value="Alimentos Gatos">Alimentos Gatos</option>
+</select>
               </div>
 
               <div className="col-span-1 md:col-span-2 pt-base">
@@ -242,7 +303,6 @@ export default function CargarProducto() {
                 </div>
               </div>
 
-              {/* Precio de Bolsa */}
               <div className="space-y-base bg-surface-container/30 p-base rounded-lg border border-outline-variant/10">
                 <label className="block text-label-md font-bold text-on-surface-variant">Precio de Bolsa</label>
                 <p className="text-caption text-on-surface-variant">Precio de compra de la bolsa completa.</p>
@@ -252,7 +312,15 @@ export default function CargarProducto() {
                 </div>
               </div>
 
-              {/* Costo por Kilo */}
+              <div className="space-y-base bg-surface-container/30 p-base rounded-lg border border-outline-variant/10">
+  <label className="block text-label-md font-bold text-on-surface-variant">Kilos por Bolsa</label>
+  <p className="text-caption text-on-surface-variant">Cantidad de kilos que trae la bolsa.</p>
+  <div className="relative">
+    <span className="absolute left-base top-1/2 -translate-y-1/2 text-on-surface-variant font-bold">kg</span>
+    <input className={inputCls + ' pl-8'} placeholder="0.00" required step="0.01" type="number" min="0" value={pesoForm.kgPerBolsa} onChange={changePeso('kgPerBolsa')} />
+  </div>
+</div>
+
               <div className="space-y-base bg-surface-container/30 p-base rounded-lg border border-outline-variant/10">
                 <label className="block text-label-md font-bold text-on-surface-variant">Costo por Kilo</label>
                 <p className="text-caption text-on-surface-variant">Costo calculado por kilogramo.</p>
@@ -262,20 +330,11 @@ export default function CargarProducto() {
                 </div>
               </div>
 
-              {/* Ganancia por Kilo */}
               <div className="col-span-1 md:col-span-2 space-y-base bg-secondary-container/10 p-base rounded-lg border border-secondary/10">
                 <label className="block text-label-md font-bold text-primary">Ganancia por Kilo (%)</label>
                 <div className="flex gap-sm items-stretch">
                   <div className="relative flex-grow">
-                    <input
-                      className={inputCls + ' pr-8 font-bold'}
-                      placeholder="0"
-                      step="0.5"
-                      type="number"
-                      min="0"
-                      value={pesoForm.profitPerKgPercent}
-                      onChange={changePeso('profitPerKgPercent')}
-                    />
+                    <input className={inputCls + ' pr-8 font-bold'} placeholder="0" step="0.5" type="number" min="0" value={pesoForm.profitPerKgPercent} onChange={changePeso('profitPerKgPercent')} />
                     <span className="absolute right-base top-1/2 -translate-y-1/2 text-primary font-bold">%</span>
                   </div>
                   <div className={`flex-grow flex items-center justify-between bg-background border rounded-lg px-base transition-all ${salePriceKg ? 'border-primary/40 bg-secondary-container/20' : 'border-secondary/20 opacity-50'}`}>
@@ -285,32 +344,14 @@ export default function CargarProducto() {
                     </span>
                   </div>
                 </div>
-                {salePriceKg && costKg > 0 && (
-                  <p className="text-caption text-secondary font-bold mt-xs">
-                    Ganancia: ${(salePriceKg - costKg).toLocaleString('es-AR', { minimumFractionDigits: 2 })} por kg sobre costo de ${costKg.toLocaleString('es-AR', { minimumFractionDigits: 2 })}/kg
-                  </p>
-                )}
               </div>
-
-              {salePriceKg && (
-                <div className="col-span-1 md:col-span-2">
-                  <div className="w-full bg-primary/5 border border-primary/20 rounded-lg p-base">
-                    <p className="text-caption text-on-surface-variant uppercase tracking-wider mb-xs">Resumen de Rentabilidad por Kilo</p>
-                    <div className="flex gap-xl">
-                      <div className="flex justify-between text-sm gap-lg"><span className="text-on-surface-variant">Costo/kg</span><span className="font-bold">${costKg.toFixed(2)}</span></div>
-                      <div className="flex justify-between text-sm gap-lg"><span className="text-on-surface-variant">Ganancia ({profitKgPct}%)</span><span className="font-bold text-secondary">+${(salePriceKg - costKg).toFixed(2)}</span></div>
-                      <div className="flex justify-between text-sm gap-lg"><span className="font-bold text-primary">Venta/kg</span><span className="font-bold text-primary">${salePriceKg.toFixed(2)}</span></div>
-                    </div>
-                  </div>
-                </div>
-              )}
             </div>
 
             <div className="flex flex-col sm:flex-row justify-end gap-md mt-lg pt-lg border-t border-outline-variant/20">
               <button type="button" onClick={handleDiscard} className="px-lg py-sm rounded-lg border border-secondary text-secondary font-bold text-body-md hover:bg-secondary/5 transition-all active:scale-95">Descartar</button>
-              <button type="submit" className="px-lg py-sm rounded-lg bg-primary-container text-white font-bold text-body-md hover:shadow-lg transition-all active:scale-95 flex items-center justify-center gap-base">
+              <button type="submit" disabled={loading} className="px-lg py-sm rounded-lg bg-primary-container text-white font-bold text-body-md hover:shadow-lg transition-all active:scale-95 flex items-center justify-center gap-base disabled:opacity-60">
                 <span className="material-symbols-outlined" style={{ fontVariationSettings: "'FILL' 1" }}>save</span>
-                Guardar Producto
+                {loading ? 'Guardando...' : 'Guardar Producto'}
               </button>
             </div>
           </form>
@@ -318,9 +359,9 @@ export default function CargarProducto() {
       </div>
 
       {showToast && (
-        <div className="fixed bottom-lg right-lg bg-primary text-white px-lg py-base rounded-xl shadow-2xl flex items-center gap-base z-50">
-          <span className="material-symbols-outlined">check_circle</span>
-          <span className="text-label-md font-bold">Producto guardado con éxito</span>
+        <div className={`fixed bottom-lg right-lg px-lg py-base rounded-xl shadow-2xl flex items-center gap-base z-50 ${toastError ? 'bg-error text-white' : 'bg-primary text-white'}`}>
+          <span className="material-symbols-outlined">{toastError ? 'error' : 'check_circle'}</span>
+          <span className="text-label-md font-bold">{toastMsg}</span>
         </div>
       )}
     </section>
