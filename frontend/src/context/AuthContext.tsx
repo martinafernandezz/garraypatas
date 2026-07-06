@@ -17,8 +17,7 @@ const AuthContext = createContext<AuthContextType | null>(null);
 const STORAGE_KEY = 'garra_auth_users';
 const SESSION_KEY = 'garra_auth_session';
 const TOKEN_KEY = 'garra_auth_token';
-const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api';
-
+const API_URL = 'https://garraypatas-production.up.railway.app/api';
 const DEFAULT_USERS: User[] = [
   { id: '1', username: 'marcelo', fullName: 'Marcelo Gomez', email: 'marcelo@garra.com', role: 'admin' },
   { id: '2', username: 'admin', fullName: 'Administrador', email: 'admin@petshop.com', role: 'admin' },
