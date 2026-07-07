@@ -71,6 +71,39 @@ export const apiIntegrado = {
     }
   },
 
+  getProductVariants: async (token: string | null, productId: number) => {
+    if (!token) return [];
+    try {
+      const response = await fetch(`${API_URL}/products/${productId}/variants`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (!response.ok) return [];
+      return response.json();
+    } catch (error) {
+      console.warn('Error al obtener talles', error);
+      return [];
+    }
+  },
+
+  updateProductVariants: async (token: string | null, productId: number, sizes: { talle: string; stock: number }[]) => {
+  if (!token) return null;
+  try {
+    const response = await fetch(`${API_URL}/products/${productId}/variants`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      },
+      body: JSON.stringify({ sizes })
+    });
+    if (!response.ok) return null;
+    return response.json();
+  } catch (error) {
+    console.warn('Error al actualizar talles', error);
+    return null;
+  }
+},
+
   // ========================
   // CATEGORÍAS
   // ========================

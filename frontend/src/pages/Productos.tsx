@@ -14,10 +14,18 @@ interface Product {
   icon: string;
   is_bulk: number | boolean;
   isBulk?: number | boolean;
+  has_sizes?: number | boolean;
+  hasSizes?: number | boolean;
   pricePerKg?: number;
   price_per_kg?: number;
   currentKgStock?: number;
   initialKgStock?: number;
+}
+
+interface SizeRow {
+  id: string;
+  talle: string;
+  stock: string;
 }
 
 const ICON_OPTIONS = [
@@ -56,6 +64,9 @@ export default function Productos({ onNavigate }: ProductosProps) {
   const [saving, setSaving] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
 
+  const [variantRows, setVariantRows] = useState<SizeRow[]>([]);
+  const [loadingVariants, setLoadingVariants] = useState(false);
+
 
 const getIconForCategory = (category: string, isBulk: boolean) => {
   if (isBulk) return 'scale';
@@ -87,6 +98,7 @@ const getIconForCategory = (category: string, isBulk: boolean) => {
           price: p.price,
           icon: p.icon && p.icon !== 'nutrition' ? p.icon : getIconForCategory(p.category, p.isBulk === 1 || p.isBulk === true),
           isBulk: p.isBulk === 1 || p.isBulk === true,
+          hasSizes: p.hasSizes === 1 || p.hasSizes === true,
           pricePerKg: p.pricePerKg,
           currentKgStock: p.currentKgStock,
           initialKgStock: p.initialKgStock,
@@ -114,6 +126,31 @@ const getIconForCategory = (category: string, isBulk: boolean) => {
     return matchSearch && matchCat && matchStock;
   });
 
+  const openEdit = async (p: Product) => {
+    setEditProduct(p);
+    setErrorMsg('');
+    if (p.hasSizes) {
+      setLoadingVariants(true);
+      try {
+        const data = await apiIntegrado.getProductVariants(token, p.id);
+        setVariantRows((data || []).map((v: any) => ({
+          id: crypto.randomUUID(),
+          talle: v.talle,
+          stock: String(v.stock),
+        })));
+      } finally {
+        setLoadingVariants(false);
+      }
+    } else {
+      setVariantRows([]);
+    }
+  };
+
+  const addVariantRow = () => setVariantRows(prev => [...prev, { id: crypto.randomUUID(), talle: '', stock: '' }]);
+  const removeVariantRow = (id: string) => setVariantRows(prev => prev.filter(r => r.id !== id));
+  const updateVariantRow = (id: string, field: 'talle' | 'stock', value: string) =>
+    setVariantRows(prev => prev.map(r => r.id === id ? { ...r, [field]: value } : r));
+
   const handleSaveEdit = async () => {
     if (!editProduct) return;
     setSaving(true);
@@ -123,8 +160,8 @@ const getIconForCategory = (category: string, isBulk: boolean) => {
       name: editProduct.name,
       sku: editProduct.sku,
       category: editProduct.category,
-      stock: editProduct.isBulk ? 0 : editProduct.stock,
-      maxStock: editProduct.isBulk ? 0 : editProduct.maxStock,
+      stock: (editProduct.isBulk || editProduct.hasSizes) ? 0 : editProduct.stock,
+      maxStock: (editProduct.isBulk || editProduct.hasSizes) ? 0 : editProduct.maxStock,
       price: editProduct.isBulk ? 0 : editProduct.price,
       icon: editProduct.icon || 'nutrition',
       isBulk: editProduct.isBulk || false,
@@ -134,11 +171,24 @@ const getIconForCategory = (category: string, isBulk: boolean) => {
     };
 
     const result = await apiIntegrado.updateProduct(token, editProduct.id, payload);
+
+    let variantsOk = true;
+    if (editProduct.hasSizes) {
+      const validSizes = variantRows.filter(r => r.talle.trim() !== '');
+      const variantsResult = await apiIntegrado.updateProductVariants(
+        token,
+        editProduct.id,
+        validSizes.map(r => ({ talle: r.talle.trim(), stock: parseInt(r.stock) || 0 }))
+      );
+      variantsOk = !!variantsResult;
+    }
+
     setSaving(false);
 
-    if (result) {
-      setProductList(prev => prev.map(p => p.id === editProduct.id ? editProduct : p));
+    if (result && variantsOk) {
+      await loadProducts();
       setEditProduct(null);
+      setVariantRows([]);
     } else {
       setErrorMsg('Error al guardar los cambios. Intenta de nuevo.');
     }
@@ -254,6 +304,8 @@ const getIconForCategory = (category: string, isBulk: boolean) => {
                     <td className="px-md py-md">
                       {p.isBulk
                         ? <span className="px-sm py-xs bg-tertiary/10 text-tertiary text-caption font-bold rounded-full">Por Peso</span>
+                        : p.hasSizes
+                        ? <span className="px-sm py-xs bg-secondary/10 text-secondary text-caption font-bold rounded-full">Por Talle</span>
                         : <span className="px-sm py-xs bg-primary/10 text-primary text-caption font-bold rounded-full">Normal</span>
                       }
                     </td>
@@ -277,7 +329,10 @@ const getIconForCategory = (category: string, isBulk: boolean) => {
                             <span className={`text-body-md ${isLow ? 'text-error font-bold' : ''}`}>
                               {p.stock} unidades
                             </span>
-                            {p.maxStock > 0 && (
+                            {p.hasSizes && (
+                              <span className="text-caption text-on-surface-variant">según talles</span>
+                            )}
+                            {!p.hasSizes && p.maxStock > 0 && (
                               <div className="w-24 h-1.5 bg-surface-container-high rounded-full overflow-hidden">
                                 <div
                                   className={`h-full ${stockBarColor(p.stock)} transition-all`}
@@ -295,7 +350,7 @@ const getIconForCategory = (category: string, isBulk: boolean) => {
                     <td className="px-md py-md text-center">
                       <div className="flex justify-center gap-sm">
                         <button
-                          onClick={() => { setEditProduct(p); setErrorMsg(''); }}
+                          onClick={() => openEdit(p)}
                           className="p-2 text-on-surface-variant hover:text-primary hover:bg-surface-variant rounded-lg transition-all"
                         >
                           <span className="material-symbols-outlined" style={{ fontSize: '20px' }}>edit</span>
@@ -327,8 +382,12 @@ const getIconForCategory = (category: string, isBulk: boolean) => {
             <div className="p-md border-b border-outline-variant/20 flex items-center justify-between">
               <div>
                 <h2 className="text-headline-md font-bold text-primary">Editar Producto</h2>
-                <span className={`text-caption font-bold px-sm py-xs rounded-full ${editProduct.isBulk ? 'bg-tertiary/10 text-tertiary' : 'bg-primary/10 text-primary'}`}>
-                  {editProduct.isBulk ? 'Producto por Peso' : 'Producto Normal'}
+                <span className={`text-caption font-bold px-sm py-xs rounded-full ${
+                  editProduct.isBulk ? 'bg-tertiary/10 text-tertiary'
+                  : editProduct.hasSizes ? 'bg-secondary/10 text-secondary'
+                  : 'bg-primary/10 text-primary'
+                }`}>
+                  {editProduct.isBulk ? 'Producto por Peso' : editProduct.hasSizes ? 'Producto por Talle' : 'Producto Normal'}
                 </span>
               </div>
               <button className="material-symbols-outlined text-on-surface-variant hover:text-error transition-colors" onClick={() => setEditProduct(null)}>
@@ -406,6 +465,49 @@ const getIconForCategory = (category: string, isBulk: boolean) => {
                       Stock original de la bolsa: {Number(editProduct.initialKgStock ?? 0).toFixed(2)} kg
                     </p>
                   </div>
+                </div>
+              ) : editProduct.hasSizes ? (
+                <div className="space-y-base bg-secondary/5 p-md rounded-xl border border-secondary/20">
+                  <h3 className="text-label-md font-bold text-secondary uppercase tracking-wider">Talles y Stock</h3>
+                  {loadingVariants ? (
+                    <p className="text-caption text-on-surface-variant">Cargando talles...</p>
+                  ) : (
+                    <div className="space-y-sm">
+                      {variantRows.map(row => (
+                        <div key={row.id} className="flex items-center gap-sm">
+                          <input
+                            className={inputCls}
+                            placeholder="Talle"
+                            value={row.talle}
+                            onChange={e => updateVariantRow(row.id, 'talle', e.target.value)}
+                          />
+                          <input
+                            className={inputCls}
+                            placeholder="Stock"
+                            type="number"
+                            min="0"
+                            value={row.stock}
+                            onChange={e => updateVariantRow(row.id, 'stock', e.target.value)}
+                          />
+                          <button
+                            type="button"
+                            onClick={() => removeVariantRow(row.id)}
+                            className="w-9 h-9 flex-shrink-0 rounded-lg border border-error/30 text-error flex items-center justify-center hover:bg-error-container/20 transition-all"
+                          >
+                            <span className="material-symbols-outlined" style={{ fontSize: '18px' }}>close</span>
+                          </button>
+                        </div>
+                      ))}
+                      <button
+                        type="button"
+                        onClick={addVariantRow}
+                        className="w-full py-sm rounded-lg border-2 border-dashed border-secondary/30 text-secondary font-bold text-label-md flex items-center justify-center gap-xs hover:bg-secondary/5 transition-all"
+                      >
+                        <span className="material-symbols-outlined" style={{ fontSize: '18px' }}>add</span>
+                        Agregar talle
+                      </button>
+                    </div>
+                  )}
                 </div>
               ) : (
                 <div className="grid grid-cols-2 gap-gutter">

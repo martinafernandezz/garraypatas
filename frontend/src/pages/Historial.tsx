@@ -11,6 +11,7 @@ interface SaleItem {
   kg_quantity?: number;
   unit_price: number;
   subtotal: number;
+  talle?: string;
 }
 
 interface Sale {
@@ -104,18 +105,13 @@ export default function Historial() {
       const saleIndex = sales.findIndex(s => s.id === saleId);
       const sale = sales[saleIndex];
 
-      // Obtener items de la venta
-      const response = await fetch(`http://localhost:5000/api/sales/${saleId}`, {
-        headers: { 'Authorization': `Bearer ${token}` }
-      });
+      // Obtener items de la venta (usa apiIntegrado para que respete la URL configurada)
+      const items = await apiIntegrado.getSaleDetails(token, saleId);
 
-      if (response.ok) {
-        const items = await response.json();
-        setSelectedSale({
-          ...sale,
-          items: items
-        });
-      }
+      setSelectedSale({
+        ...sale,
+        items: items || []
+      });
     } catch (error) {
       console.warn('Error cargando detalles de venta', error);
     } finally {
@@ -384,7 +380,10 @@ export default function Historial() {
                         {selectedSale.items.map(item => (
                           <div key={item.id} className="flex justify-between items-start border-b border-outline-variant/10 pb-sm">
                             <div className="flex-1">
-                              <p className="text-body-md font-bold">{item.product_name}</p>
+                              <p className="text-body-md font-bold">
+                                {item.product_name}
+                                {item.talle ? ` - Talle ${item.talle}` : ''}
+                              </p>
                               <p className="text-caption text-on-surface-variant">
                                 {item.quantity ? `${item.quantity} unidad${item.quantity !== 1 ? 'es' : ''}` : `${item.kg_quantity} kilos`}
                               </p>
@@ -403,9 +402,9 @@ export default function Historial() {
                   <div className="bg-surface-container-low p-md rounded-lg space-y-sm border-t-2 border-outline-variant">
                     <div className="flex justify-between">
                       <span className="text-on-surface-variant">Subtotal:</span>
-                      <span className="font-bold">{fmt(selectedSale.total_amount + (selectedSale.discount_value || 0))}</span>
+                      <span className="font-bold">{fmt(Number(selectedSale.total_amount) + Number(selectedSale.discount_value || 0))}</span>
                     </div>
-                    {selectedSale.discount_value && selectedSale.discount_value > 0 && (
+                    {selectedSale.discount_value && Number(selectedSale.discount_value) > 0 && (
                       <div className="flex justify-between text-green-700">
                         <span>{selectedSale.discount_label}</span>
                         <span className="font-bold">-{fmt(selectedSale.discount_value)}</span>

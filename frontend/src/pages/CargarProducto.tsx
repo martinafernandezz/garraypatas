@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { apiIntegrado } from '../services/apiIntegrado';
 
-type ProductTab = 'normal' | 'peso';
+type ProductTab = 'normal' | 'peso' | 'talle';
 
 interface NormalForm {
   name: string;
@@ -23,8 +23,26 @@ interface PesoForm {
   kgPerBolsa: string;
 }
 
+interface SizeRow {
+  id: string;
+  talle: string;
+  stock: string;
+}
+
+interface TalleForm {
+  name: string;
+  sku: string;
+  category: string;
+  purchasePrice: string;
+  profitPercent: string;
+  sizes: SizeRow[];
+}
+
 const EMPTY_NORMAL: NormalForm = { name: '', sku: '', category: '', purchasePrice: '', profitPercent: '', initialStock: '' };
 const EMPTY_PESO: PesoForm = { name: '', sku: '', category: '', bolsaPrice: '', costPerKg: '', profitPerKgPercent: '', kgPerBolsa: '' };
+
+const newSizeRow = (): SizeRow => ({ id: crypto.randomUUID(), talle: '', stock: '' });
+const createEmptyTalle = (): TalleForm => ({ name: '', sku: '', category: '', purchasePrice: '', profitPercent: '', sizes: [newSizeRow()] });
 
 export default function CargarProducto() {
   const { token } = useAuth();
@@ -32,6 +50,7 @@ export default function CargarProducto() {
   const [categories, setCategories] = useState<string[]>([]);
   const [normalForm, setNormalForm] = useState<NormalForm>(EMPTY_NORMAL);
   const [pesoForm, setPesoForm] = useState<PesoForm>(EMPTY_PESO);
+  const [talleForm, setTalleForm] = useState<TalleForm>(createEmptyTalle());
   const [showToast, setShowToast] = useState(false);
   const [toastMsg, setToastMsg] = useState('Producto guardado con éxito');
   const [toastError, setToastError] = useState(false);
@@ -48,6 +67,12 @@ export default function CargarProducto() {
   const profitKgPct = parseFloat(pesoForm.profitPerKgPercent) || 0;
   const salePriceKg = costKg > 0 && profitKgPct > 0 ? costKg * (1 + profitKgPct / 100) : null;
 
+  // Talle form derived values
+  const costTalle = parseFloat(talleForm.purchasePrice) || 0;
+  const pctTalle = parseFloat(talleForm.profitPercent) || 0;
+  const salePriceTalle = costTalle > 0 && pctTalle > 0 ? costTalle * (1 + pctTalle / 100) : null;
+  const totalStockTalle = talleForm.sizes.reduce((acc, s) => acc + (parseInt(s.stock) || 0), 0);
+
   useEffect(() => {
     apiIntegrado.getCategories(token).then((data: any[]) => {
       if (data && data.length > 0) {
@@ -61,6 +86,15 @@ export default function CargarProducto() {
 
   const changePeso = (field: keyof PesoForm) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
     setPesoForm(prev => ({ ...prev, [field]: e.target.value }));
+
+  const changeTalle = (field: 'name' | 'sku' | 'category' | 'purchasePrice' | 'profitPercent') =>
+    (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
+      setTalleForm(prev => ({ ...prev, [field]: e.target.value }));
+
+  const addSizeRow = () => setTalleForm(prev => ({ ...prev, sizes: [...prev.sizes, newSizeRow()] }));
+  const removeSizeRow = (id: string) => setTalleForm(prev => ({ ...prev, sizes: prev.sizes.filter(s => s.id !== id) }));
+  const updateSizeRow = (id: string, field: 'talle' | 'stock', value: string) =>
+    setTalleForm(prev => ({ ...prev, sizes: prev.sizes.map(s => s.id === id ? { ...s, [field]: value } : s) }));
 
   const showNotification = (msg: string, error = false) => {
     setToastMsg(msg);
@@ -128,10 +162,45 @@ export default function CargarProducto() {
     }
   };
 
+  const handleTalleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const validSizes = talleForm.sizes.filter(s => s.talle.trim() !== '');
+    if (validSizes.length === 0) {
+      showNotification('Agregá al menos un talle con su stock', true);
+      return;
+    }
+    setLoading(true);
+    try {
+      const result = await apiIntegrado.createProduct(token, {
+        name: talleForm.name,
+        sku: talleForm.sku,
+        category: talleForm.category,
+        price: salePriceTalle ?? costTalle,
+        stock: 0,
+        maxStock: 50,
+        icon: 'inventory_2',
+        hasSizes: true,
+        sizes: validSizes.map(s => ({ talle: s.talle.trim(), stock: parseInt(s.stock) || 0 })),
+      });
+
+      if (result) {
+        showNotification('Producto con talles guardado con éxito');
+        setTalleForm(createEmptyTalle());
+      } else {
+        showNotification('Error al guardar el producto', true);
+      }
+    } catch {
+      showNotification('Error al guardar el producto', true);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleDiscard = () => {
     if (confirm('¿Está seguro de descartar los cambios?')) {
       if (tab === 'normal') setNormalForm(EMPTY_NORMAL);
-      else setPesoForm(EMPTY_PESO);
+      else if (tab === 'peso') setPesoForm(EMPTY_PESO);
+      else setTalleForm(createEmptyTalle());
     }
   };
 
@@ -169,6 +238,15 @@ export default function CargarProducto() {
           <span className="flex items-center gap-xs">
             <span className="material-symbols-outlined" style={{ fontSize: '18px' }}>scale</span>
             Producto por Peso
+          </span>
+        </button>
+        <button
+          onClick={() => setTab('talle')}
+          className={`px-lg py-sm rounded-lg text-label-md font-bold transition-all ${tab === 'talle' ? 'bg-primary text-white shadow-sm' : 'text-on-surface-variant hover:text-primary'}`}
+        >
+          <span className="flex items-center gap-xs">
+            <span className="material-symbols-outlined" style={{ fontSize: '18px' }}>straighten</span>
+            Producto por Talle
           </span>
         </button>
       </div>
@@ -344,6 +422,129 @@ export default function CargarProducto() {
                     </span>
                   </div>
                 </div>
+              </div>
+            </div>
+
+            <div className="flex flex-col sm:flex-row justify-end gap-md mt-lg pt-lg border-t border-outline-variant/20">
+              <button type="button" onClick={handleDiscard} className="px-lg py-sm rounded-lg border border-secondary text-secondary font-bold text-body-md hover:bg-secondary/5 transition-all active:scale-95">Descartar</button>
+              <button type="submit" disabled={loading} className="px-lg py-sm rounded-lg bg-primary-container text-white font-bold text-body-md hover:shadow-lg transition-all active:scale-95 flex items-center justify-center gap-base disabled:opacity-60">
+                <span className="material-symbols-outlined" style={{ fontVariationSettings: "'FILL' 1" }}>save</span>
+                {loading ? 'Guardando...' : 'Guardar Producto'}
+              </button>
+            </div>
+          </form>
+        )}
+
+        {/* SIZE / TALLE PRODUCT FORM */}
+        {tab === 'talle' && (
+          <form className="relative z-10 space-y-md" onSubmit={handleTalleSubmit}>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-gutter">
+
+              <div className="space-y-base col-span-1 md:col-span-2">
+                <label className="block text-label-md font-bold text-primary">Nombre del Producto</label>
+                <input className={inputCls} placeholder="Ej. Campera Impermeable para Perro" required type="text" value={talleForm.name} onChange={changeTalle('name')} />
+              </div>
+
+              <div className="space-y-base">
+                <label className="block text-label-md font-bold text-primary">Código</label>
+                <div className="relative">
+                  <span className="material-symbols-outlined absolute left-base top-1/2 -translate-y-1/2 text-outline-variant" style={{ fontSize: '20px' }}>barcode</span>
+                  <input className={inputCls + ' pl-10'} placeholder="77900000000" required type="text" value={talleForm.sku} onChange={changeTalle('sku')} />
+                </div>
+              </div>
+
+              <div className="space-y-base">
+                <label className="block text-label-md font-bold text-primary">Categoría</label>
+                {categorySelect(talleForm.category, changeTalle('category'))}
+              </div>
+
+              <div className="col-span-1 md:col-span-2 pt-base">
+                <div className="border-l-4 border-primary pl-base mb-base">
+                  <h3 className="text-label-md font-bold text-primary uppercase tracking-wider">Gestión de Precios</h3>
+                </div>
+              </div>
+
+              <div className="space-y-base bg-surface-container/30 p-base rounded-lg border border-outline-variant/10">
+                <label className="block text-label-md font-bold text-on-surface-variant">Precio de Compra (Costo)</label>
+                <div className="relative">
+                  <span className="absolute left-base top-1/2 -translate-y-1/2 text-on-surface-variant font-bold">$</span>
+                  <input className={inputCls + ' pl-8'} placeholder="0.00" required step="0.01" type="number" min="0" value={talleForm.purchasePrice} onChange={changeTalle('purchasePrice')} />
+                </div>
+              </div>
+
+              <div className="space-y-base bg-secondary-container/10 p-base rounded-lg border border-secondary/10">
+                <label className="block text-label-md font-bold text-primary">Porcentaje de Ganancia</label>
+                <div className="flex gap-sm items-stretch">
+                  <div className="relative flex-grow">
+                    <input className={inputCls + ' pr-8 font-bold'} placeholder="0" step="0.5" type="number" min="0" value={talleForm.profitPercent} onChange={changeTalle('profitPercent')} />
+                    <span className="absolute right-base top-1/2 -translate-y-1/2 text-primary font-bold">%</span>
+                  </div>
+                  <div className={`flex-grow flex items-center justify-between bg-background border rounded-lg px-base transition-all ${salePriceTalle ? 'border-primary/40 bg-secondary-container/20' : 'border-secondary/20 opacity-50'}`}>
+                    <span className="text-caption text-on-surface-variant font-bold">Precio Final</span>
+                    <span className="text-body-md font-bold text-primary">
+                      {salePriceTalle ? `$${salePriceTalle.toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '—'}
+                    </span>
+                  </div>
+                </div>
+                {salePriceTalle && costTalle > 0 && (
+                  <p className="text-caption text-secondary font-bold mt-xs">
+                    Ganancia: ${(salePriceTalle - costTalle).toLocaleString('es-AR', { minimumFractionDigits: 2 })} sobre costo de ${costTalle.toLocaleString('es-AR', { minimumFractionDigits: 2 })}
+                  </p>
+                )}
+              </div>
+
+              <div className="col-span-1 md:col-span-2 pt-base">
+                <div className="border-l-4 border-primary pl-base mb-base flex items-center justify-between">
+                  <h3 className="text-label-md font-bold text-primary uppercase tracking-wider">Talles y Stock</h3>
+                  {totalStockTalle > 0 && (
+                    <span className="text-caption text-on-surface-variant font-bold">Stock total: {totalStockTalle}</span>
+                  )}
+                </div>
+              </div>
+
+              <div className="col-span-1 md:col-span-2 space-y-sm">
+                {talleForm.sizes.map(row => (
+                  <div key={row.id} className="flex items-center gap-sm bg-surface-container/30 p-sm rounded-lg border border-outline-variant/10">
+                    <div className="flex-1">
+                      <label className="block text-caption text-on-surface-variant mb-xs">Talle</label>
+                      <input
+                        className={inputCls}
+                        placeholder="S, M, L, 38, 40..."
+                        type="text"
+                        value={row.talle}
+                        onChange={e => updateSizeRow(row.id, 'talle', e.target.value)}
+                      />
+                    </div>
+                    <div className="flex-1">
+                      <label className="block text-caption text-on-surface-variant mb-xs">Stock</label>
+                      <input
+                        className={inputCls}
+                        placeholder="0"
+                        type="number"
+                        min="0"
+                        value={row.stock}
+                        onChange={e => updateSizeRow(row.id, 'stock', e.target.value)}
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => removeSizeRow(row.id)}
+                      disabled={talleForm.sizes.length === 1}
+                      className="mt-lg w-9 h-9 flex-shrink-0 rounded-lg border border-error/30 text-error flex items-center justify-center hover:bg-error-container/20 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+                    >
+                      <span className="material-symbols-outlined" style={{ fontSize: '18px' }}>close</span>
+                    </button>
+                  </div>
+                ))}
+
+                <button
+                  type="button"
+                  onClick={addSizeRow}
+                  className="w-full py-sm rounded-lg border-2 border-dashed border-primary/30 text-primary font-bold text-label-md flex items-center justify-center gap-xs hover:bg-primary/5 transition-all"
+                >
+                  <span className="material-symbols-outlined" style={{ fontSize: '18px' }}>add</span>
+                  Agregar talle
+                </button>
               </div>
             </div>
 

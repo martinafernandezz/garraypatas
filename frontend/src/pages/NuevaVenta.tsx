@@ -10,6 +10,7 @@ interface CartItem {
   isBulk?: boolean;
   pricePerKg?: number;
   kgQty?: number;
+  talle?: string;
 }
 
 interface Product {
@@ -20,6 +21,8 @@ interface Product {
   stock: number;
   is_bulk: number | boolean;
   isBulk?: number | boolean;
+  has_sizes?: number | boolean;
+  hasSizes?: number | boolean;
   price_per_kg?: number;
   pricePerKg?: number;
   current_kg_stock?: number;
@@ -28,9 +31,16 @@ interface Product {
   icon: string;
 }
 
+interface Variant {
+  id: number;
+  talle: string;
+  stock: number;
+}
+
 const getPricePerKg = (p: Product) => Number(p.pricePerKg ?? p.price_per_kg ?? 0);
 const getCurrentKgStock = (p: Product) => Number(p.currentKgStock ?? p.current_kg_stock ?? 0);
 const getIsBulk = (p: Product) => p.is_bulk === 1 || p.is_bulk === true || p.isBulk === 1 || p.isBulk === true;
+const getHasSizes = (p: Product) => p.has_sizes === 1 || p.has_sizes === true || p.hasSizes === 1 || p.hasSizes === true;
 
 const paymentMethods = [
   { id: 'efectivo',      icon: 'payments',     label: 'Efectivo',     badge: '-10%', badgeColor: 'text-secondary' },
@@ -81,12 +91,35 @@ export default function NuevaVenta() {
   const [calcAmount, setCalcAmount] = useState('');
   const [showCalcResults, setShowCalcResults] = useState(false);
 
+  const [talleSearch, setTalleSearch] = useState('');
+  const [talleSelected, setTalleSelected] = useState<Product | null>(null);
+  const [talleVariants, setTalleVariants] = useState<Variant[]>([]);
+  const [selectedTalle, setSelectedTalle] = useState<string | null>(null);
+  const [talleQty, setTalleQty] = useState('1');
+  const [showTalleResults, setShowTalleResults] = useState(false);
+  const [loadingVariants, setLoadingVariants] = useState(false);
+
   useEffect(() => {
     apiIntegrado.getProducts(token).then(setProducts);
   }, [token]);
 
-  const normalProducts = products.filter(p => !getIsBulk(p));
+  useEffect(() => {
+    if (talleSelected) {
+      setLoadingVariants(true);
+      apiIntegrado.getProductVariants(token, talleSelected.id).then((data: Variant[]) => {
+        setTalleVariants(data || []);
+        setLoadingVariants(false);
+      });
+    } else {
+      setTalleVariants([]);
+    }
+    setSelectedTalle(null);
+    setTalleQty('1');
+  }, [talleSelected, token]);
+
+  const normalProducts = products.filter(p => !getIsBulk(p) && !getHasSizes(p));
   const bulkProducts = products.filter(p => getIsBulk(p));
+  const talleProducts = products.filter(p => getHasSizes(p));
 
   const filteredCatalog = search.length > 1
     ? normalProducts.filter(p =>
@@ -103,6 +136,10 @@ export default function NuevaVenta() {
     ? bulkProducts.filter(p => p.name.toLowerCase().includes(calcSearch.toLowerCase()))
     : bulkProducts;
 
+  const filteredTalleProducts = talleSearch.length > 0
+    ? talleProducts.filter(p => p.name.toLowerCase().includes(talleSearch.toLowerCase()))
+    : talleProducts;
+
   const bulkTotalKg = (parseFloat(bulkKg) || 0) + (parseFloat(bulkGrams) || 0) / 1000;
   const bulkTotalPrice = bulkSelected ? getPricePerKg(bulkSelected) * bulkTotalKg : 0;
 
@@ -110,10 +147,12 @@ export default function NuevaVenta() {
     ? (parseFloat(calcAmount) / (getPricePerKg(calcProduct) || 1)) * 1000
     : null;
 
+  const selectedVariant = talleVariants.find(v => v.talle === selectedTalle) || null;
+
   const addToCart = (item: Product) => {
     setCart(prev => {
-      const existing = prev.find(c => c.id === item.id);
-      if (existing) return prev.map(c => c.id === item.id ? { ...c, qty: c.qty + 1 } : c);
+      const existing = prev.find(c => c.id === item.id && !c.talle);
+      if (existing) return prev.map(c => c.id === item.id && !c.talle ? { ...c, qty: c.qty + 1 } : c);
       return [...prev, { id: item.id, name: item.name, price: Number(item.price), qty: 1 }];
     });
     setSearch('');
@@ -137,14 +176,39 @@ export default function NuevaVenta() {
     setBulkGrams('');
   }, [bulkSelected, bulkTotalKg]);
 
-  const updateQty = (id: number, delta: number) => {
+  const addTalleToCart = () => {
+    if (!talleSelected || !selectedTalle || !selectedVariant) return;
+    const qty = Math.max(1, parseInt(talleQty) || 1);
+    if (qty > selectedVariant.stock) return;
+
+    setCart(prev => {
+      const existing = prev.find(c => c.id === talleSelected.id && c.talle === selectedTalle);
+      if (existing) {
+        return prev.map(c => c.id === talleSelected.id && c.talle === selectedTalle ? { ...c, qty: c.qty + qty } : c);
+      }
+      return [...prev, {
+        id: talleSelected.id,
+        name: `${talleSelected.name} - Talle ${selectedTalle}`,
+        price: Number(talleSelected.price),
+        qty,
+        talle: selectedTalle,
+      }];
+    });
+
+    setTalleSelected(null);
+    setTalleSearch('');
+    setSelectedTalle(null);
+    setTalleQty('1');
+  };
+
+  const updateQty = (id: number, delta: number, talle?: string) => {
     setCart(prev => prev
-      .map(c => c.id === id ? { ...c, qty: Math.max(1, c.qty + delta) } : c)
+      .map(c => (c.id === id && c.talle === talle) ? { ...c, qty: Math.max(1, c.qty + delta) } : c)
       .filter(c => c.qty > 0)
     );
   };
 
-  const removeItem = (id: number) => setCart(prev => prev.filter(c => c.id !== id));
+  const removeItem = (id: number, talle?: string) => setCart(prev => prev.filter(c => !(c.id === id && c.talle === talle)));
 
   const subtotal = cart.reduce((acc, item) => acc + item.price * item.qty, 0);
   const discountRaw = parseFloat(discountValue) || 0;
@@ -166,6 +230,7 @@ export default function NuevaVenta() {
       quantity: item.isBulk ? 0 : item.qty,
       kgQuantity: item.isBulk ? (item.kgQty ?? 0) : 0,
       price: item.isBulk ? (item.pricePerKg ?? 0) : item.price,
+      talle: item.talle || undefined,
     }));
 
     const result = await apiIntegrado.createSale(token, {
@@ -318,6 +383,100 @@ export default function NuevaVenta() {
           </div>
         </section>
 
+        <section className="bg-primary/5 border border-outline-variant/20 rounded-xl p-lg">
+          <div className="flex items-center gap-sm mb-md">
+            <span className="material-symbols-outlined text-primary">straighten</span>
+            <h3 className="text-headline-md font-bold text-primary">Producto por talle</h3>
+          </div>
+
+          <div className="space-y-md">
+            <div className="relative">
+              <label className="block text-label-md text-on-surface-variant mb-xs">Buscar producto</label>
+              <div className="relative">
+                <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-on-surface-variant" style={{ fontSize: '18px' }}>search</span>
+                <input
+                  className="w-full pl-10 pr-4 py-3 bg-white border border-outline-variant rounded-lg focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all text-body-md"
+                  placeholder="Escribi el nombre del producto..."
+                  value={talleSearch}
+                  onChange={e => { setTalleSearch(e.target.value); setShowTalleResults(true); setTalleSelected(null); }}
+                  onFocus={() => setShowTalleResults(true)}
+                />
+              </div>
+              {showTalleResults && filteredTalleProducts.length > 0 && (
+                <div className="absolute z-10 w-full mt-1 bg-white border border-outline-variant/30 rounded-xl shadow-lg overflow-hidden">
+                  {filteredTalleProducts.map(p => (
+                    <button
+                      key={p.id}
+                      onClick={() => { setTalleSelected(p); setTalleSearch(p.name); setShowTalleResults(false); }}
+                      className="w-full flex justify-between items-center px-md py-sm hover:bg-primary/10 transition-colors border-b border-outline-variant/10 last:border-0 text-left"
+                    >
+                      <span className="text-body-md font-bold">{p.name}</span>
+                      <span className="text-label-md text-primary font-bold">{fmt(Number(p.price))}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {talleSelected && (
+              <div className="bg-white rounded-lg p-md border border-primary/20">
+                <p className="text-label-md font-bold text-primary mb-sm">{talleSelected.name} — {fmt(Number(talleSelected.price))}</p>
+
+                {loadingVariants ? (
+                  <p className="text-caption text-on-surface-variant">Cargando talles...</p>
+                ) : talleVariants.length === 0 ? (
+                  <p className="text-caption text-on-surface-variant">Este producto no tiene talles cargados.</p>
+                ) : (
+                  <>
+                    <div className="flex flex-wrap gap-xs mb-sm">
+                      {talleVariants.map(v => (
+                        <button
+                          key={v.talle}
+                          onClick={() => setSelectedTalle(v.talle)}
+                          disabled={v.stock <= 0}
+                          className={`px-md py-2 rounded-lg border font-bold text-label-md transition-all ${
+                            selectedTalle === v.talle
+                              ? 'bg-primary text-white border-primary'
+                              : v.stock <= 0
+                              ? 'border-outline-variant/30 text-outline-variant/50 cursor-not-allowed line-through'
+                              : 'border-outline-variant text-on-surface-variant hover:border-primary hover:text-primary'
+                          }`}
+                        >
+                          {v.talle} ({v.stock})
+                        </button>
+                      ))}
+                    </div>
+
+                    {selectedTalle && (
+                      <div className="grid grid-cols-3 gap-md items-end">
+                        <div className="col-span-1">
+                          <label className="block text-caption text-on-surface-variant mb-xs">Cantidad</label>
+                          <input
+                            className="w-full px-md py-2 border border-outline-variant rounded-lg text-body-md font-bold text-right"
+                            type="number"
+                            min="1"
+                            max={selectedVariant?.stock ?? 1}
+                            value={talleQty}
+                            onChange={e => setTalleQty(e.target.value)}
+                          />
+                        </div>
+                        <button
+                          onClick={addTalleToCart}
+                          disabled={!selectedVariant || (parseInt(talleQty) || 0) > selectedVariant.stock}
+                          className="col-span-2 py-2 bg-primary text-white rounded-lg font-bold flex items-center justify-center gap-xs hover:opacity-90 transition-all shadow-sm active:scale-95 disabled:opacity-40"
+                        >
+                          <span className="material-symbols-outlined">add</span>
+                          Añadir talle {selectedTalle}
+                        </button>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+        </section>
+
         <section className="bg-secondary/5 border border-secondary/20 rounded-xl p-lg">
           <div className="flex items-center gap-sm mb-md">
             <span className="material-symbols-outlined text-secondary">calculate</span>
@@ -428,7 +587,7 @@ export default function NuevaVenta() {
             ) : (
               <div className="divide-y divide-outline-variant/10">
                 {cart.map(item => (
-                  <div key={item.id} className="px-md py-sm flex items-center gap-sm">
+                  <div key={`${item.id}-${item.talle || 'base'}`} className="px-md py-sm flex items-center gap-sm">
                     <div className="flex-grow min-w-0">
                       <p className="text-label-md font-bold truncate">{item.name}</p>
                       {item.isBulk && item.pricePerKg && item.kgQty ? (
@@ -441,15 +600,15 @@ export default function NuevaVenta() {
                     </div>
                     <div className="flex items-center gap-xs flex-shrink-0">
                       {!item.isBulk && <>
-                        <button onClick={() => updateQty(item.id, -1)} className="w-5 h-5 rounded border border-outline-variant flex items-center justify-center hover:bg-surface-variant">
+                        <button onClick={() => updateQty(item.id, -1, item.talle)} className="w-5 h-5 rounded border border-outline-variant flex items-center justify-center hover:bg-surface-variant">
                           <span className="material-symbols-outlined" style={{ fontSize: '12px' }}>remove</span>
                         </button>
                         <span className="w-5 text-center text-label-md font-bold">{item.qty}</span>
-                        <button onClick={() => updateQty(item.id, 1)} className="w-5 h-5 rounded border border-outline-variant flex items-center justify-center hover:bg-surface-variant">
+                        <button onClick={() => updateQty(item.id, 1, item.talle)} className="w-5 h-5 rounded border border-outline-variant flex items-center justify-center hover:bg-surface-variant">
                           <span className="material-symbols-outlined" style={{ fontSize: '12px' }}>add</span>
                         </button>
                       </>}
-                      <button onClick={() => removeItem(item.id)} className="w-5 h-5 rounded flex items-center justify-center text-error hover:bg-error-container/20 ml-xs">
+                      <button onClick={() => removeItem(item.id, item.talle)} className="w-5 h-5 rounded flex items-center justify-center text-error hover:bg-error-container/20 ml-xs">
                         <span className="material-symbols-outlined" style={{ fontSize: '12px' }}>close</span>
                       </button>
                     </div>

@@ -236,18 +236,26 @@ app.get('/api/products', verifyToken, async (req, res) => {
     
     let query = `
       SELECT p.id, p.name, p.sku, c.name as category, 
-             p.stock, p.max_stock as maxStock, p.price, p.icon,
-             p.is_bulk as isBulk, p.price_per_kg as pricePerKg, 
+             COALESCE(v.total_stock, p.stock) as stock, 
+             p.max_stock as maxStock, p.price, p.icon,
+             p.is_bulk as isBulk, p.has_sizes as hasSizes,
+             p.price_per_kg as pricePerKg, 
              p.current_kg_stock as currentKgStock, 
              p.initial_kg_stock as initialKgStock,
              p.alert_threshold as alertThreshold,
              CASE 
                WHEN p.is_bulk = true AND p.current_kg_stock <= p.alert_threshold THEN 'low'
-               WHEN p.is_bulk = false AND p.stock <= p.alert_threshold THEN 'low'
+               WHEN p.has_sizes = true AND COALESCE(v.total_stock, 0) <= p.alert_threshold THEN 'low'
+               WHEN p.is_bulk = false AND p.has_sizes = false AND p.stock <= p.alert_threshold THEN 'low'
                ELSE 'normal'
              END as stockStatus
       FROM products p
       JOIN categories c ON p.category_id = c.id
+      LEFT JOIN (
+        SELECT product_id, SUM(stock) as total_stock 
+        FROM product_variants 
+        GROUP BY product_id
+      ) v ON v.product_id = p.id
       WHERE 1=1
     `;
     
@@ -272,7 +280,8 @@ app.get('/api/products', verifyToken, async (req, res) => {
     if (stockStatus === 'low') {
       query += ` AND (
         (p.is_bulk = true AND p.current_kg_stock <= p.alert_threshold) OR
-        (p.is_bulk = false AND p.stock <= p.alert_threshold)
+        (p.has_sizes = true AND COALESCE(v.total_stock, 0) <= p.alert_threshold) OR
+        (p.is_bulk = false AND p.has_sizes = false AND p.stock <= p.alert_threshold)
       )`;
     }
     if (isBulk === 'true') {
@@ -291,6 +300,59 @@ app.get('/api/products', verifyToken, async (req, res) => {
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: 'Error al obtener productos' });
+  }
+});
+
+app.get('/api/products/:id/variants', verifyToken, async (req, res) => {
+  try {
+    const connection = await pool.getConnection();
+    const [variants] = await connection.query(
+      'SELECT id, talle, stock FROM product_variants WHERE product_id = ? ORDER BY id',
+      [req.params.id]
+    );
+    connection.release();
+    res.json(variants);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Error al obtener talles' });
+  }
+});
+
+app.put('/api/products/:id/variants', verifyToken, async (req, res) => {
+  try {
+    const { sizes } = req.body;
+    if (!Array.isArray(sizes)) {
+      return res.status(400).json({ error: 'sizes debe ser un array' });
+    }
+
+    const connection = await pool.getConnection();
+    await connection.beginTransaction();
+
+    try {
+      await connection.query('DELETE FROM product_variants WHERE product_id = ?', [req.params.id]);
+
+      for (const s of sizes) {
+        if (s.talle && s.talle.trim() !== '') {
+          await connection.query(
+            'INSERT INTO product_variants (product_id, talle, stock) VALUES (?, ?, ?)',
+            [req.params.id, s.talle.trim(), parseInt(s.stock) || 0]
+          );
+        }
+      }
+
+      await connection.commit();
+      res.json({ message: 'Talles actualizados' });
+
+    } catch (err) {
+      await connection.rollback();
+      throw err;
+    } finally {
+      connection.release();
+    }
+
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Error al actualizar talles' });
   }
 });
 
@@ -322,33 +384,58 @@ app.get('/api/products/:id', verifyToken, async (req, res) => {
 
 app.post('/api/products', verifyToken, async (req, res) => {
   try {
-    const { name, sku, category, stock, maxStock, price, icon, isBulk, pricePerKg, initialKgStock, alertThreshold } = req.body;
+    const { name, sku, category, stock, maxStock, price, icon, isBulk, pricePerKg, initialKgStock, alertThreshold, hasSizes, sizes } = req.body;
     
     if (!name || !sku || !category || (price === undefined || price === null)) {
       return res.status(400).json({ error: 'Campos requeridos: name, sku, category, price' });
     }
 
     const connection = await pool.getConnection();
-    const [categories] = await connection.query('SELECT id FROM categories WHERE name = ?', [category]);
-    if (categories.length === 0) {
+    await connection.beginTransaction();
+
+    try {
+      const [categories] = await connection.query('SELECT id FROM categories WHERE name = ?', [category]);
+      if (categories.length === 0) {
+        await connection.rollback();
+        connection.release();
+        return res.status(400).json({ error: 'Categoría no existe' });
+      }
+
+      const [result] = await connection.query(
+        `INSERT INTO products (name, sku, category_id, stock, max_stock, price, icon, 
+                             is_bulk, has_sizes, price_per_kg, initial_kg_stock, current_kg_stock, alert_threshold) 
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [name, sku, categories[0].id, hasSizes ? 0 : (stock || 0), maxStock || 50, price, icon || 'nutrition', 
+         isBulk || false, hasSizes || false, pricePerKg || null, initialKgStock || 0, initialKgStock || 0, alertThreshold || 2]
+      );
+
+      const productId = result.insertId;
+
+      if (hasSizes && Array.isArray(sizes)) {
+        for (const s of sizes) {
+          if (s.talle && s.talle.trim() !== '') {
+            await connection.query(
+              'INSERT INTO product_variants (product_id, talle, stock) VALUES (?, ?, ?)',
+              [productId, s.talle.trim(), parseInt(s.stock) || 0]
+            );
+          }
+        }
+      }
+
+      await connection.commit();
+      res.status(201).json({ id: productId, message: 'Producto creado' });
+
+    } catch (err) {
+      await connection.rollback();
+      throw err;
+    } finally {
       connection.release();
-      return res.status(400).json({ error: 'Categoría no existe' });
     }
 
-    const [result] = await connection.query(
-      `INSERT INTO products (name, sku, category_id, stock, max_stock, price, icon, 
-                           is_bulk, price_per_kg, initial_kg_stock, current_kg_stock, alert_threshold) 
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [name, sku, categories[0].id, stock || 0, maxStock || 50, price, icon || 'nutrition', 
-       isBulk || false, pricePerKg || null, initialKgStock || 0, initialKgStock || 0, alertThreshold || 2]
-    );
-    connection.release();
-
-    res.status(201).json({ id: result.insertId, message: 'Producto creado' });
   } catch (error) {
     console.error(error);
     if (error.code === 'ER_DUP_ENTRY') {
-      return res.status(400).json({ error: 'El SKU ya existe' });
+      return res.status(400).json({ error: 'El SKU ya existe, o hay talles repetidos' });
     }
     res.status(500).json({ error: 'Error al crear producto' });
   }
@@ -505,9 +592,9 @@ app.post('/api/sales', verifyToken, async (req, res) => {
       );
       const saleId = saleResult.insertId;
 
-      for (const item of items) {
+     for (const item of items) {
         const [products] = await connection.query(
-          'SELECT is_bulk, stock, current_kg_stock, alert_threshold FROM products WHERE id = ?',
+          'SELECT is_bulk, has_sizes, stock, current_kg_stock, alert_threshold FROM products WHERE id = ?',
           [item.productId]
         );
 
@@ -519,12 +606,31 @@ app.post('/api/sales', verifyToken, async (req, res) => {
         const subtotal = item.quantity * item.price;
 
         await connection.query(
-          `INSERT INTO sale_items (sale_id, product_id, quantity, kg_quantity, unit_price, subtotal) 
-           VALUES (?, ?, ?, ?, ?, ?)`,
-          [saleId, item.productId, item.quantity || 0, item.kgQuantity || 0, item.price, subtotal]
+          `INSERT INTO sale_items (sale_id, product_id, quantity, kg_quantity, unit_price, subtotal, talle) 
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          [saleId, item.productId, item.quantity || 0, item.kgQuantity || 0, item.price, subtotal, item.talle || null]
         );
 
-        if (product.is_bulk) {
+        if (product.has_sizes) {
+          if (!item.talle) {
+            throw new Error(`Falta indicar el talle para el producto ${item.productId}`);
+          }
+          const [variants] = await connection.query(
+            'SELECT stock FROM product_variants WHERE product_id = ? AND talle = ? FOR UPDATE',
+            [item.productId, item.talle]
+          );
+          if (variants.length === 0) {
+            throw new Error(`Talle ${item.talle} no encontrado para el producto ${item.productId}`);
+          }
+          const newStock = variants[0].stock - (item.quantity || 0);
+          await connection.query(
+            'UPDATE product_variants SET stock = ? WHERE product_id = ? AND talle = ?',
+            [Math.max(0, newStock), item.productId, item.talle]
+          );
+          if (newStock <= product.alert_threshold) {
+            await createStockAlert(connection, item.productId, 'low_stock', newStock, product.alert_threshold);
+          }
+        } else if (product.is_bulk) {
           const newKgStock = parseFloat(product.current_kg_stock) - parseFloat(item.kgQuantity || 0);
           await connection.query(
             'UPDATE products SET current_kg_stock = ? WHERE id = ?',
@@ -544,7 +650,6 @@ app.post('/api/sales', verifyToken, async (req, res) => {
           }
         }
       }
-
       await connection.commit();
 
       res.status(201).json({
@@ -617,7 +722,7 @@ app.get('/api/sales/:id', verifyToken, async (req, res) => {
     const connection = await pool.getConnection();
     const [saleDetails] = await connection.query(`
       SELECT si.id, si.product_id, p.name as product_name, si.quantity, si.kg_quantity, 
-             si.unit_price, si.subtotal
+             si.unit_price, si.subtotal, si.talle
       FROM sale_items si
       JOIN products p ON si.product_id = p.id
       WHERE si.sale_id = ?
