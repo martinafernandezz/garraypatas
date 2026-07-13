@@ -24,6 +24,8 @@ interface Sale {
   discount_value?: number;
   discount_label?: string;
   status: string;
+  payment_status?: 'paid' | 'pending';
+  customer_name?: string | null;
   created_at: string;
   user_name: string;
 }
@@ -119,6 +121,14 @@ export default function Historial() {
     }
   };
 
+  const handleMarkPaid = async (saleId: number) => {
+    const result = await apiIntegrado.markSalePaymentStatus(token, saleId, 'paid');
+    if (result) {
+      setSales(prev => prev.map(s => s.id === saleId ? { ...s, payment_status: 'paid' } : s));
+      setSelectedSale(prev => prev && prev.id === saleId ? { ...prev, payment_status: 'paid' } : prev);
+    }
+  };
+
   // Función para imprimir comprobante
   const handlePrint = async () => {
     if (!selectedSale) return;
@@ -150,7 +160,8 @@ export default function Historial() {
       'efectivo': '💵 Efectivo',
       'debito': '🏦 Débito',
       'transferencia': '📱 Transferencia',
-      'credito': '💳 Crédito'
+      'credito': '💳 Crédito',
+      'cuenta_corriente': '📒 Cta. Cte.'
     };
     return labels[method] || method;
   };
@@ -164,6 +175,10 @@ export default function Historial() {
     const date = new Date(dateString);
     return date.toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' });
   };
+
+  const pendingTotal = filteredSales
+    .filter(s => s.payment_status === 'pending')
+    .reduce((sum, s) => sum + Number(s.total_amount), 0);
 
   return (
     <div className="p-md flex flex-col gap-lg">
@@ -197,6 +212,7 @@ export default function Historial() {
             <option value="debito">Débito</option>
             <option value="transferencia">Transferencia</option>
             <option value="credito">Crédito</option>
+            <option value="cuenta_corriente">Cta. Cte.</option>
           </select>
         </div>
 
@@ -222,9 +238,9 @@ export default function Historial() {
       </div>
 
       {/* Resumen */}
-      <div className="grid grid-cols-3 gap-md">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-md">
         <div className="bg-primary/10 border border-primary/20 rounded-lg p-md text-center">
-          <p className="text-caption text-on-surface-variant">Total Ventas</p>
+          <p className="text-caption text-on-surface-variant">Ventas totales</p>
           <p className="text-headline-sm font-bold text-primary">{filteredSales.length}</p>
         </div>
         <div className="bg-tertiary/10 border border-tertiary/20 rounded-lg p-md text-center">
@@ -241,6 +257,10 @@ export default function Historial() {
   : fmt(0)}
           </p>
         </div>
+        <div className="bg-error/10 border border-error/20 rounded-lg p-md text-center">
+          <p className="text-caption text-on-surface-variant">Pendientes de pago</p>
+          <p className="text-headline-sm font-bold text-error">{fmt(pendingTotal)}</p>
+        </div>
       </div>
 
       {/* Tabla de ventas */}
@@ -256,11 +276,13 @@ export default function Historial() {
                 <tr className="bg-surface-container-low text-on-surface-variant border-b border-outline-variant/20">
                   <th className="px-md py-base text-label-md">ID Venta</th>
                   <th className="px-md py-base text-label-md">Usuario</th>
+                  <th className="px-md py-base text-label-md">Cliente</th>
                   <th className="px-md py-base text-label-md">Método Pago</th>
                   <th className="px-md py-base text-label-md">Fecha y Hora</th>
                   <th className="px-md py-base text-label-md">Monto</th>
                   <th className="px-md py-base text-label-md">Descuento</th>
                   <th className="px-md py-base text-label-md">Total</th>
+                  <th className="px-md py-base text-label-md">Estado</th>
                   <th className="px-md py-base text-label-md">Acción</th>
                 </tr>
               </thead>
@@ -271,6 +293,9 @@ export default function Historial() {
                       <span className="font-mono font-bold text-primary">{sale.sale_number}</span>
                     </td>
                     <td className="px-md py-md">{sale.user_name}</td>
+                    <td className="px-md py-md text-caption text-on-surface-variant">
+                      {sale.customer_name || '-'}
+                    </td>
                     <td className="px-md py-md">
                       <span className="px-sm py-xs bg-secondary-container/20 text-secondary text-caption font-bold rounded-full">
                         {getPaymentMethodLabel(sale.payment_method)}
@@ -291,12 +316,29 @@ export default function Historial() {
                       {fmt(sale.total_amount)}
                     </td>
                     <td className="px-md py-md">
-                      <button
-                        onClick={() => loadSaleDetails(sale.id)}
-                        className="px-md py-sm bg-primary text-white rounded-lg text-caption font-bold hover:opacity-90 transition-opacity"
-                      >
-                        Ver Detalle
-                      </button>
+                      {sale.payment_status === 'pending' ? (
+                        <span className="px-sm py-xs bg-error-container/30 text-error text-caption font-bold rounded-full">Pendiente</span>
+                      ) : (
+                        <span className="px-sm py-xs bg-primary/10 text-primary text-caption font-bold rounded-full">Pagado</span>
+                      )}
+                    </td>
+                    <td className="px-md py-md">
+                      <div className="flex gap-xs">
+                        <button
+                          onClick={() => loadSaleDetails(sale.id)}
+                          className="px-md py-sm bg-primary text-white rounded-lg text-caption font-bold hover:opacity-90 transition-opacity"
+                        >
+                          Ver Detalle
+                        </button>
+                        {sale.payment_status === 'pending' && (
+                          <button
+                            onClick={() => handleMarkPaid(sale.id)}
+                            className="px-md py-sm border border-primary text-primary rounded-lg text-caption font-bold hover:bg-primary/10 transition-colors"
+                          >
+                            Marcar pagado
+                          </button>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -365,11 +407,34 @@ export default function Historial() {
                         <p className="text-body-md font-bold">{getPaymentMethodLabel(selectedSale.payment_method)}</p>
                       </div>
                     </div>
-                    <div>
+                    {selectedSale.customer_name && (
+                      <div>
+                        <p className="text-caption text-on-surface-variant">Cliente</p>
+                        <p className="text-body-md font-bold">{selectedSale.customer_name}</p>
+                      </div>
+                    )}
+                    <div className="flex items-center gap-sm">
                       <span className="inline-block px-md py-sm bg-secondary-container/30 text-secondary text-caption font-bold rounded-full">
                         {selectedSale.status?.toUpperCase()}
                       </span>
+                      {selectedSale.payment_status && (
+                        <span className={`inline-block px-md py-sm text-caption font-bold rounded-full ${
+                          selectedSale.payment_status === 'pending'
+                            ? 'bg-error-container/30 text-error'
+                            : 'bg-primary/10 text-primary'
+                        }`}>
+                          {selectedSale.payment_status === 'pending' ? 'PENDIENTE' : 'PAGADO'}
+                        </span>
+                      )}
                     </div>
+                    {selectedSale.payment_status === 'pending' && (
+                      <button
+                        onClick={() => handleMarkPaid(selectedSale.id)}
+                        className="w-full py-sm border border-primary text-primary rounded-lg font-bold text-caption hover:bg-primary/10 transition-colors"
+                      >
+                        Marcar como pagado
+                      </button>
+                    )}
                   </div>
 
                   {/* Productos */}

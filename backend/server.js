@@ -227,6 +227,84 @@ app.delete('/api/categories/:id', verifyToken, async (req, res) => {
 });
 
 // =====================
+// RUTAS DE CLIENTES / CUENTAS CORRIENTES
+// =====================
+
+app.get('/api/customers', verifyToken, async (req, res) => {
+  try {
+    const connection = await pool.getConnection();
+    const [customers] = await connection.query(`
+      SELECT c.id, c.first_name, c.last_name, c.phone, c.created_at,
+             COALESCE(SUM(CASE WHEN s.payment_status = 'pending' THEN s.total_amount ELSE 0 END), 0) as pendingTotal,
+             COUNT(s.id) as salesCount
+      FROM customers c
+      LEFT JOIN sales s ON s.customer_id = c.id
+      GROUP BY c.id
+      ORDER BY c.last_name, c.first_name
+    `);
+    connection.release();
+    res.json(customers);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Error al obtener clientes' });
+  }
+});
+
+app.post('/api/customers', verifyToken, async (req, res) => {
+  try {
+    const { firstName, lastName, phone } = req.body;
+    if (!firstName || !lastName) {
+      return res.status(400).json({ error: 'Nombre y apellido son requeridos' });
+    }
+    const connection = await pool.getConnection();
+    const [result] = await connection.query(
+      'INSERT INTO customers (first_name, last_name, phone) VALUES (?, ?, ?)',
+      [firstName, lastName, phone || null]
+    );
+    connection.release();
+    res.status(201).json({ id: result.insertId, message: 'Cliente creado' });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Error al crear cliente' });
+  }
+});
+
+app.get('/api/customers/:id/sales', verifyToken, async (req, res) => {
+  try {
+    const connection = await pool.getConnection();
+    const [sales] = await connection.query(`
+      SELECT s.id, s.sale_number, s.total_amount, s.payment_method, s.payment_status,
+             s.discount_label, s.created_at
+      FROM sales s
+      WHERE s.customer_id = ?
+      ORDER BY s.created_at DESC
+    `, [req.params.id]);
+    connection.release();
+    res.json(sales);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Error al obtener ventas del cliente' });
+  }
+});
+
+app.put('/api/sales/:id/payment-status', verifyToken, async (req, res) => {
+  try {
+    const { paymentStatus } = req.body;
+    if (!['paid', 'pending'].includes(paymentStatus)) {
+      return res.status(400).json({ error: 'paymentStatus debe ser "paid" o "pending"' });
+    }
+    const connection = await pool.getConnection();
+    await connection.query('UPDATE sales SET payment_status = ? WHERE id = ?', [paymentStatus, req.params.id]);
+    connection.release();
+    res.json({ message: 'Estado de pago actualizado' });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Error al actualizar estado de pago' });
+  }
+});
+
+
+// =====================
 // RUTAS DE PRODUCTOS
 // =====================
 
@@ -552,7 +630,7 @@ async function createStockAlert(connection, productId, alertType, currentStock, 
 
 app.post('/api/sales', verifyToken, async (req, res) => {
   try {
-    const { items, totalAmount, paymentMethod, installments, discountType, discountValue } = req.body;
+    const { items, totalAmount, paymentMethod, installments, discountType, discountValue, customerId } = req.body;
     
     if (!items || items.length === 0 || !totalAmount) {
       return res.status(400).json({ error: 'items y totalAmount requeridos' });
@@ -583,12 +661,14 @@ app.post('/api/sales', verifyToken, async (req, res) => {
         }
       }
 
+      const paymentStatus = paymentMethod === 'cuenta_corriente' ? 'pending' : 'paid';
+
       const [saleResult] = await connection.query(
         `INSERT INTO sales (sale_number, user_id, total_amount, payment_method, installments, 
-                          discount_type, discount_value, discount_label, status, created_at) 
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'completed', NOW())`,
+                          discount_type, discount_value, discount_label, status, customer_id, payment_status, created_at) 
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'completed', ?, ?, NOW())`,
         [saleNumber, req.userId, totalAmount, paymentMethod || 'cash', installments || 1, 
-         discountType || null, discountValue || 0, discountLabel]
+         discountType || null, discountValue || 0, discountLabel, customerId || null, paymentStatus]
       );
       const saleId = saleResult.insertId;
 
@@ -679,9 +759,12 @@ app.get('/api/sales', verifyToken, async (req, res) => {
     let query = `
       SELECT s.id, s.sale_number, s.total_amount, s.payment_method, s.installments,
              s.discount_type, s.discount_value, s.discount_label,
-             s.status, s.created_at, u.full_name as user_name
+             s.status, s.payment_status, s.customer_id,
+             CASE WHEN c.id IS NOT NULL THEN CONCAT(c.first_name, ' ', c.last_name) ELSE NULL END as customer_name,
+             s.created_at, u.full_name as user_name
       FROM sales s
       JOIN users u ON s.user_id = u.id
+      LEFT JOIN customers c ON s.customer_id = c.id
       WHERE 1=1
     `;
 

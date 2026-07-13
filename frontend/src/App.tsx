@@ -12,6 +12,8 @@ import Precios from './pages/Precios';
 import Ajustes from './pages/Ajustes';
 import Categorias from './pages/Categorias';
 import Login from './pages/Login';
+import CuentasCorrientes from './pages/CuentasCorrientes';
+
 
 function AppContent() {
   const { user, logout } = useAuth();
@@ -48,6 +50,7 @@ function AppContent() {
       case 'precios': return <Precios />;
       case 'ajustes': return <Ajustes />;
       case 'categorias': return <Categorias />;
+      case 'cuentas-corrientes': return <CuentasCorrientes />;
     }
   };
 

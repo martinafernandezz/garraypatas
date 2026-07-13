@@ -1,5 +1,4 @@
-export type Page = 'dashboard' | 'ventas' | 'historial' | 'productos' | 'cargar-producto' | 'precios' | 'ajustes' | 'categorias';
-
+export type Page = 'dashboard' | 'ventas' | 'historial' | 'productos' | 'cargar-producto' | 'precios' | 'ajustes' | 'categorias' | 'cuentas-corrientes';
 export interface User {
   id: string;
   username: string;

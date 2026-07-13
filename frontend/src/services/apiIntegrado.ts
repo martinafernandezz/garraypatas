@@ -86,23 +86,23 @@ export const apiIntegrado = {
   },
 
   updateProductVariants: async (token: string | null, productId: number, sizes: { talle: string; stock: number }[]) => {
-  if (!token) return null;
-  try {
-    const response = await fetch(`${API_URL}/products/${productId}/variants`, {
-      method: 'PUT',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${token}`
-      },
-      body: JSON.stringify({ sizes })
-    });
-    if (!response.ok) return null;
-    return response.json();
-  } catch (error) {
-    console.warn('Error al actualizar talles', error);
-    return null;
-  }
-},
+    if (!token) return null;
+    try {
+      const response = await fetch(`${API_URL}/products/${productId}/variants`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ sizes })
+      });
+      if (!response.ok) return null;
+      return response.json();
+    } catch (error) {
+      console.warn('Error al actualizar talles', error);
+      return null;
+    }
+  },
 
   // ========================
   // CATEGORÍAS
@@ -192,6 +192,7 @@ export const apiIntegrado = {
       return null;
     }
   },
+
   getUsers: async (token: string | null) => {
     if (!token) return [];
     try {
@@ -226,16 +227,86 @@ export const apiIntegrado = {
   },
 
   getSaleDetails: async (token: string | null, id: number) => {
-  if (!token) return [];
-  try {
-    const response = await fetch(`${API_URL}/sales/${id}`, {
-      headers: { 'Authorization': `Bearer ${token}` }
-    });
-    if (!response.ok) return [];
-    return response.json();
-  } catch (error) {
-    console.warn('Error al obtener detalle de venta', error);
-    return [];
-  }
-},
+    if (!token) return [];
+    try {
+      const response = await fetch(`${API_URL}/sales/${id}`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (!response.ok) return [];
+      return response.json();
+    } catch (error) {
+      console.warn('Error al obtener detalle de venta', error);
+      return [];
+    }
+  },
+
+  // ========================
+  // CLIENTES / CUENTAS CORRIENTES
+  // ========================
+
+  getCustomers: async (token: string | null) => {
+    if (!token) return [];
+    try {
+      const response = await fetch(`${API_URL}/customers`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (!response.ok) return [];
+      return response.json();
+    } catch (error) {
+      console.warn('Error al obtener clientes', error);
+      return [];
+    }
+  },
+
+  createCustomer: async (token: string | null, customer: { firstName: string; lastName: string; phone?: string | null }) => {
+    if (!token) return null;
+    try {
+      const response = await fetch(`${API_URL}/customers`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify(customer)
+      });
+      if (!response.ok) return null;
+      return response.json();
+    } catch (error) {
+      console.warn('Error al crear cliente', error);
+      return null;
+    }
+  },
+
+  getCustomerSales: async (token: string | null, customerId: number) => {
+    if (!token) return [];
+    try {
+      const response = await fetch(`${API_URL}/customers/${customerId}/sales`, {
+        headers: { 'Authorization': `Bearer ${token}` }
+      });
+      if (!response.ok) return [];
+      return response.json();
+    } catch (error) {
+      console.warn('Error al obtener ventas del cliente', error);
+      return [];
+    }
+  },
+
+  markSalePaymentStatus: async (token: string | null, saleId: number, paymentStatus: 'paid' | 'pending') => {
+    if (!token) return null;
+    try {
+      const response = await fetch(`${API_URL}/sales/${saleId}/payment-status`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify({ paymentStatus })
+      });
+      if (!response.ok) return null;
+      return response.json();
+    } catch (error) {
+      console.warn('Error al actualizar estado de pago', error);
+      return null;
+    }
+  },
 };

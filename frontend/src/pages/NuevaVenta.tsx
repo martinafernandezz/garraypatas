@@ -37,16 +37,24 @@ interface Variant {
   stock: number;
 }
 
+interface Customer {
+  id: number;
+  first_name: string;
+  last_name: string;
+  phone?: string;
+}
+
 const getPricePerKg = (p: Product) => Number(p.pricePerKg ?? p.price_per_kg ?? 0);
 const getCurrentKgStock = (p: Product) => Number(p.currentKgStock ?? p.current_kg_stock ?? 0);
 const getIsBulk = (p: Product) => p.is_bulk === 1 || p.is_bulk === true || p.isBulk === 1 || p.isBulk === true;
 const getHasSizes = (p: Product) => p.has_sizes === 1 || p.has_sizes === true || p.hasSizes === 1 || p.hasSizes === true;
 
 const paymentMethods = [
-  { id: 'efectivo',      icon: 'payments',     label: 'Efectivo',     badge: '-10%', badgeColor: 'text-secondary' },
-  { id: 'debito',        icon: 'credit_card',   label: 'Debito',       badge: null,   badgeColor: '' },
-  { id: 'transferencia', icon: 'swap_horiz',    label: 'Transf.',      badge: '-10%', badgeColor: 'text-secondary' },
-  { id: 'credito',       icon: 'contactless',   label: 'Credito',      badge: null,   badgeColor: '' },
+  { id: 'efectivo',         icon: 'payments',              label: 'Efectivo',     badge: '-10%', badgeColor: 'text-secondary' },
+  { id: 'debito',           icon: 'credit_card',            label: 'Debito',       badge: null,   badgeColor: '' },
+  { id: 'transferencia',    icon: 'swap_horiz',             label: 'Transf.',      badge: '-10%', badgeColor: 'text-secondary' },
+  { id: 'credito',          icon: 'contactless',            label: 'Credito',      badge: null,   badgeColor: '' },
+  { id: 'cuenta_corriente', icon: 'account_balance_wallet', label: 'Cta. Cte.',    badge: null,   badgeColor: '' },
 ];
 
 const INSTALLMENT_OPTIONS = [1, 2, 3, 4, 5, 6];
@@ -99,8 +107,19 @@ export default function NuevaVenta() {
   const [showTalleResults, setShowTalleResults] = useState(false);
   const [loadingVariants, setLoadingVariants] = useState(false);
 
+  const [customers, setCustomers] = useState<Customer[]>([]);
+  const [customerSearch, setCustomerSearch] = useState('');
+  const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
+  const [showCustomerResults, setShowCustomerResults] = useState(false);
+  const [showNewCustomerForm, setShowNewCustomerForm] = useState(false);
+  const [newFirstName, setNewFirstName] = useState('');
+  const [newLastName, setNewLastName] = useState('');
+  const [newPhone, setNewPhone] = useState('');
+  const [creatingCustomer, setCreatingCustomer] = useState(false);
+
   useEffect(() => {
     apiIntegrado.getProducts(token).then(setProducts);
+    apiIntegrado.getCustomers(token).then(setCustomers);
   }, [token]);
 
   useEffect(() => {
@@ -139,6 +158,10 @@ export default function NuevaVenta() {
   const filteredTalleProducts = talleSearch.length > 0
     ? talleProducts.filter(p => p.name.toLowerCase().includes(talleSearch.toLowerCase()))
     : talleProducts;
+
+  const filteredCustomers = customerSearch.length > 0
+    ? customers.filter(c => `${c.first_name} ${c.last_name}`.toLowerCase().includes(customerSearch.toLowerCase()))
+    : customers;
 
   const bulkTotalKg = (parseFloat(bulkKg) || 0) + (parseFloat(bulkGrams) || 0) / 1000;
   const bulkTotalPrice = bulkSelected ? getPricePerKg(bulkSelected) * bulkTotalKg : 0;
@@ -210,6 +233,32 @@ export default function NuevaVenta() {
 
   const removeItem = (id: number, talle?: string) => setCart(prev => prev.filter(c => !(c.id === id && c.talle === talle)));
 
+  const handleCreateCustomer = async () => {
+    if (!newFirstName.trim() || !newLastName.trim()) return;
+    setCreatingCustomer(true);
+    const result = await apiIntegrado.createCustomer(token, {
+      firstName: newFirstName.trim(),
+      lastName: newLastName.trim(),
+      phone: newPhone.trim() || null,
+    });
+    setCreatingCustomer(false);
+
+    if (result) {
+      const newCustomer: Customer = {
+        id: result.id,
+        first_name: newFirstName.trim(),
+        last_name: newLastName.trim(),
+        phone: newPhone.trim() || undefined,
+      };
+      setCustomers(prev => [...prev, newCustomer]);
+      setSelectedCustomer(newCustomer);
+      setShowNewCustomerForm(false);
+      setNewFirstName('');
+      setNewLastName('');
+      setNewPhone('');
+    }
+  };
+
   const subtotal = cart.reduce((acc, item) => acc + item.price * item.qty, 0);
   const discountRaw = parseFloat(discountValue) || 0;
   const manualDiscountAmount = discountValue
@@ -220,8 +269,10 @@ export default function NuevaVenta() {
   const paymentAdjAmount = netSubtotal * surcharge;
   const finalTotal = netSubtotal + paymentAdjAmount;
 
+  const needsCustomer = selectedPayment === 'cuenta_corriente' && !selectedCustomer;
+
   const finishSale = async () => {
-    if (cart.length === 0 || !selectedPayment) return;
+    if (cart.length === 0 || !selectedPayment || needsCustomer) return;
     setSaving(true);
     setErrorMsg('');
 
@@ -240,6 +291,7 @@ export default function NuevaVenta() {
       installments,
       discountType: discountValue ? discountType : null,
       discountValue: discountValue ? discountRaw : null,
+      customerId: selectedCustomer ? selectedCustomer.id : undefined,
     });
 
     setSaving(false);
@@ -254,6 +306,8 @@ export default function NuevaVenta() {
         setInstallments(1);
         setDiscountValue('');
         setSaleNumber('');
+        setSelectedCustomer(null);
+        setCustomerSearch('');
       }, 3000);
     } else {
       setErrorMsg('Error al registrar la venta. Intenta de nuevo.');
@@ -721,14 +775,103 @@ export default function NuevaVenta() {
             </div>
           )}
 
+          {selectedPayment === 'cuenta_corriente' && (
+            <div className="mt-md p-md bg-secondary/5 border border-secondary/20 rounded-lg space-y-sm">
+              <p className="text-label-md font-bold text-secondary">Cliente</p>
+
+              {selectedCustomer ? (
+                <div className="flex items-center justify-between bg-white rounded-lg p-sm border border-secondary/20">
+                  <span className="text-body-md font-bold">{selectedCustomer.first_name} {selectedCustomer.last_name}</span>
+                  <button onClick={() => setSelectedCustomer(null)} className="text-error text-caption font-bold hover:underline">
+                    Cambiar
+                  </button>
+                </div>
+              ) : (
+                <>
+                  <div className="relative">
+                    <input
+                      className="w-full px-md py-2 border border-outline-variant rounded-lg text-body-md"
+                      placeholder="Buscar cliente por nombre..."
+                      value={customerSearch}
+                      onChange={e => { setCustomerSearch(e.target.value); setShowCustomerResults(true); }}
+                      onFocus={() => setShowCustomerResults(true)}
+                    />
+                    {showCustomerResults && filteredCustomers.length > 0 && (
+                      <div className="absolute z-10 w-full mt-1 bg-white border border-outline-variant/30 rounded-xl shadow-lg overflow-hidden max-h-48 overflow-y-auto">
+                        {filteredCustomers.map(c => (
+                          <button
+                            key={c.id}
+                            onClick={() => { setSelectedCustomer(c); setCustomerSearch(''); setShowCustomerResults(false); }}
+                            className="w-full flex justify-between items-center px-md py-sm hover:bg-secondary/10 transition-colors border-b border-outline-variant/10 last:border-0 text-left"
+                          >
+                            <span className="text-body-md font-bold">{c.first_name} {c.last_name}</span>
+                            {c.phone && <span className="text-caption text-on-surface-variant">{c.phone}</span>}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {!showNewCustomerForm && (
+                    <button
+                      type="button"
+                      onClick={() => setShowNewCustomerForm(true)}
+                      className="text-caption font-bold text-secondary hover:underline"
+                    >
+                      + Crear cliente nuevo
+                    </button>
+                  )}
+                </>
+              )}
+
+              {showNewCustomerForm && (
+                <div className="bg-white rounded-lg p-md border border-secondary/20 space-y-sm">
+                  <input
+                    className="w-full px-md py-2 border border-outline-variant rounded-lg text-body-md"
+                    placeholder="Nombre"
+                    value={newFirstName}
+                    onChange={e => setNewFirstName(e.target.value)}
+                  />
+                  <input
+                    className="w-full px-md py-2 border border-outline-variant rounded-lg text-body-md"
+                    placeholder="Apellido"
+                    value={newLastName}
+                    onChange={e => setNewLastName(e.target.value)}
+                  />
+                  <input
+                    className="w-full px-md py-2 border border-outline-variant rounded-lg text-body-md"
+                    placeholder="Teléfono (opcional)"
+                    value={newPhone}
+                    onChange={e => setNewPhone(e.target.value)}
+                  />
+                  <div className="flex gap-sm">
+                    <button
+                      onClick={handleCreateCustomer}
+                      disabled={!newFirstName.trim() || !newLastName.trim() || creatingCustomer}
+                      className="flex-1 py-2 bg-secondary text-white rounded-lg font-bold text-caption disabled:opacity-40"
+                    >
+                      {creatingCustomer ? 'Creando...' : 'Guardar Cliente'}
+                    </button>
+                    <button
+                      onClick={() => setShowNewCustomerForm(false)}
+                      className="flex-1 py-2 border border-outline-variant rounded-lg font-bold text-caption"
+                    >
+                      Cancelar
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+
           {errorMsg && <p className="text-error text-caption mt-sm">{errorMsg}</p>}
 
           <button
             onClick={finishSale}
-            disabled={cart.length === 0 || !selectedPayment || saving}
+            disabled={cart.length === 0 || !selectedPayment || saving || needsCustomer}
             className="w-full mt-md py-4 bg-primary text-white rounded-lg text-headline-md font-bold flex items-center justify-center gap-sm hover:opacity-90 transition-all active:scale-95 shadow-lg disabled:opacity-40 disabled:cursor-not-allowed"
           >
-            {saving ? 'Registrando...' : 'Finalizar Venta'}
+            {saving ? 'Registrando...' : needsCustomer ? 'Seleccioná un cliente' : 'Finalizar Venta'}
           </button>
         </div>
       </div>
