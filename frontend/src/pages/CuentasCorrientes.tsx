@@ -271,7 +271,7 @@ export default function CuentasCorrientes() {
 
               <div className="space-y-base">
                 <label className="block text-label-md font-bold text-primary">Teléfono (opcional)</label>
-                <input className={inputCls} value={newPhone} onChange={e => setNewPhone(e.target.value)} placeholder="Ej. 341 555-0000" />
+                <input className={inputCls} value={newPhone} onChange={e => setNewPhone(e.target.value)} placeholder="Ej. 2474-123-456" />
               </div>
 
               <div className="flex gap-sm pt-base">
