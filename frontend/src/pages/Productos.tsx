@@ -26,6 +26,9 @@ interface SizeRow {
   id: string;
   talle: string;
   stock: string;
+  costo: string;
+  gananciaPercent: string;
+  price: string;
 }
 
 const ICON_OPTIONS = [
@@ -48,6 +51,13 @@ const stockBarColor = (stock: number) => {
   if (stock <= 5) return 'bg-tertiary';
   return 'bg-primary';
 };
+
+function suggestedPrice(row: SizeRow): number | null {
+  const costo = parseFloat(row.costo) || 0;
+  const pct = parseFloat(row.gananciaPercent) || 0;
+  if (costo > 0 && pct > 0) return costo * (1 + pct / 100);
+  return null;
+}
 
 interface ProductosProps {
   onNavigate: (page: Page) => void;
@@ -137,6 +147,9 @@ const getIconForCategory = (category: string, isBulk: boolean) => {
           id: crypto.randomUUID(),
           talle: v.talle,
           stock: String(v.stock),
+          price: v.price !== null && v.price !== undefined ? String(v.price) : '',
+          costo: v.costPrice !== null && v.costPrice !== undefined ? String(v.costPrice) : '',
+          gananciaPercent: v.profitPercent !== null && v.profitPercent !== undefined ? String(v.profitPercent) : '',
         })));
       } finally {
         setLoadingVariants(false);
@@ -146,15 +159,23 @@ const getIconForCategory = (category: string, isBulk: boolean) => {
     }
   };
 
-  const addVariantRow = () => setVariantRows(prev => [...prev, { id: crypto.randomUUID(), talle: '', stock: '' }]);
+  const addVariantRow = () => setVariantRows(prev => [...prev, { id: crypto.randomUUID(), talle: '', stock: '', costo: '', gananciaPercent: '', price: '' }]);
   const removeVariantRow = (id: string) => setVariantRows(prev => prev.filter(r => r.id !== id));
-  const updateVariantRow = (id: string, field: 'talle' | 'stock', value: string) =>
+  const updateVariantRow = (id: string, field: 'talle' | 'stock' | 'costo' | 'gananciaPercent' | 'price', value: string) =>
     setVariantRows(prev => prev.map(r => r.id === id ? { ...r, [field]: value } : r));
+  const applySuggestion = (id: string, value: number) =>
+    setVariantRows(prev => prev.map(r => r.id === id ? { ...r, price: value.toFixed(2) } : r));
 
   const handleSaveEdit = async () => {
     if (!editProduct) return;
     setSaving(true);
     setErrorMsg('');
+
+    const validSizes = editProduct.hasSizes ? variantRows.filter(r => r.talle.trim() !== '') : [];
+    const sizePrices = validSizes.map(r => parseFloat(r.price)).filter(p => !isNaN(p) && p > 0);
+    const basePrice = editProduct.hasSizes
+      ? (sizePrices.length > 0 ? Math.min(...sizePrices) : editProduct.price)
+      : editProduct.price;
 
     const payload = {
       name: editProduct.name,
@@ -162,7 +183,7 @@ const getIconForCategory = (category: string, isBulk: boolean) => {
       category: editProduct.category,
       stock: (editProduct.isBulk || editProduct.hasSizes) ? 0 : editProduct.stock,
       maxStock: (editProduct.isBulk || editProduct.hasSizes) ? 0 : editProduct.maxStock,
-      price: editProduct.isBulk ? 0 : editProduct.price,
+      price: editProduct.isBulk ? 0 : basePrice,
       icon: editProduct.icon || 'nutrition',
       isBulk: editProduct.isBulk || false,
       pricePerKg: editProduct.isBulk ? (editProduct.pricePerKg ?? 0) : null,
@@ -174,11 +195,16 @@ const getIconForCategory = (category: string, isBulk: boolean) => {
 
     let variantsOk = true;
     if (editProduct.hasSizes) {
-      const validSizes = variantRows.filter(r => r.talle.trim() !== '');
       const variantsResult = await apiIntegrado.updateProductVariants(
         token,
         editProduct.id,
-        validSizes.map(r => ({ talle: r.talle.trim(), stock: parseInt(r.stock) || 0 }))
+        validSizes.map(r => ({
+          talle: r.talle.trim(),
+          stock: parseInt(r.stock) || 0,
+          price: r.price !== '' ? parseFloat(r.price) : null,
+          costPrice: r.costo !== '' ? parseFloat(r.costo) : null,
+          profitPercent: r.gananciaPercent !== '' ? parseFloat(r.gananciaPercent) : null,
+        }))
       );
       variantsOk = !!variantsResult;
     }
@@ -345,7 +371,11 @@ const getIconForCategory = (category: string, isBulk: boolean) => {
                       </div>
                     </td>
                     <td className="px-md py-md text-right font-bold text-on-surface">
-                      {p.isBulk ? `${fmt(Number(p.pricePerKg ?? 0))}/kg` : fmt(Number(p.price))}
+                      {p.isBulk
+                        ? `${fmt(Number(p.pricePerKg ?? 0))}/kg`
+                        : p.hasSizes
+                        ? <span>desde {fmt(Number(p.price))}</span>
+                        : fmt(Number(p.price))}
                     </td>
                     <td className="px-md py-md text-center">
                       <div className="flex justify-center gap-sm">
@@ -468,36 +498,105 @@ const getIconForCategory = (category: string, isBulk: boolean) => {
                 </div>
               ) : editProduct.hasSizes ? (
                 <div className="space-y-base bg-secondary/5 p-md rounded-xl border border-secondary/20">
-                  <h3 className="text-label-md font-bold text-secondary uppercase tracking-wider">Talles y Stock</h3>
+                  <h3 className="text-label-md font-bold text-secondary uppercase tracking-wider">Talles, Stock y Precio</h3>
+                  <p className="text-caption text-on-surface-variant">
+                    El costo y la ganancia de cada talle son opcionales, solo para calcular un precio sugerido. El precio final siempre es editable.
+                  </p>
                   {loadingVariants ? (
                     <p className="text-caption text-on-surface-variant">Cargando talles...</p>
                   ) : (
                     <div className="space-y-sm">
-                      {variantRows.map(row => (
-                        <div key={row.id} className="flex items-center gap-sm">
-                          <input
-                            className={inputCls}
-                            placeholder="Talle"
-                            value={row.talle}
-                            onChange={e => updateVariantRow(row.id, 'talle', e.target.value)}
-                          />
-                          <input
-                            className={inputCls}
-                            placeholder="Stock"
-                            type="number"
-                            min="0"
-                            value={row.stock}
-                            onChange={e => updateVariantRow(row.id, 'stock', e.target.value)}
-                          />
-                          <button
-                            type="button"
-                            onClick={() => removeVariantRow(row.id)}
-                            className="w-9 h-9 flex-shrink-0 rounded-lg border border-error/30 text-error flex items-center justify-center hover:bg-error-container/20 transition-all"
-                          >
-                            <span className="material-symbols-outlined" style={{ fontSize: '18px' }}>close</span>
-                          </button>
-                        </div>
-                      ))}
+                      {variantRows.map(row => {
+                        const suggestion = suggestedPrice(row);
+                        const showSuggestion = suggestion !== null && row.price !== suggestion.toFixed(2);
+                        return (
+                          <div key={row.id} className="bg-white p-sm rounded-lg border border-secondary/20 space-y-xs">
+                            <div className="flex items-end gap-sm">
+                              <div className="w-16">
+                                <label className="block text-caption text-on-surface-variant mb-xs">Talle</label>
+                                <input
+                                  className={inputCls}
+                                  placeholder="Talle"
+                                  value={row.talle}
+                                  onChange={e => updateVariantRow(row.id, 'talle', e.target.value)}
+                                />
+                              </div>
+                              <div className="w-16">
+                                <label className="block text-caption text-on-surface-variant mb-xs">Stock</label>
+                                <input
+                                  className={inputCls}
+                                  placeholder="0"
+                                  type="number"
+                                  min="0"
+                                  value={row.stock}
+                                  onChange={e => updateVariantRow(row.id, 'stock', e.target.value)}
+                                />
+                              </div>
+                              <div className="flex-1">
+                                <label className="block text-caption text-on-surface-variant mb-xs">Costo (opc.)</label>
+                                <div className="relative">
+                                  <span className="absolute left-2 top-1/2 -translate-y-1/2 text-on-surface-variant font-bold text-caption">$</span>
+                                  <input
+                                    className={inputCls + ' pl-6'}
+                                    placeholder="-"
+                                    type="number"
+                                    min="0"
+                                    step="0.01"
+                                    value={row.costo}
+                                    onChange={e => updateVariantRow(row.id, 'costo', e.target.value)}
+                                  />
+                                </div>
+                              </div>
+                              <div className="flex-1">
+                                <label className="block text-caption text-on-surface-variant mb-xs">Gan. % (opc.)</label>
+                                <div className="relative">
+                                  <input
+                                    className={inputCls + ' pr-6'}
+                                    placeholder="-"
+                                    type="number"
+                                    min="0"
+                                    step="0.5"
+                                    value={row.gananciaPercent}
+                                    onChange={e => updateVariantRow(row.id, 'gananciaPercent', e.target.value)}
+                                  />
+                                  <span className="absolute right-2 top-1/2 -translate-y-1/2 text-on-surface-variant font-bold text-caption">%</span>
+                                </div>
+                              </div>
+                              <div className="flex-1">
+                                <label className="block text-caption text-on-surface-variant mb-xs">Precio</label>
+                                <div className="relative">
+                                  <span className="absolute left-2 top-1/2 -translate-y-1/2 text-on-surface-variant font-bold text-caption">$</span>
+                                  <input
+                                    className={inputCls + ' pl-6 font-bold'}
+                                    placeholder="0.00"
+                                    type="number"
+                                    min="0"
+                                    step="0.01"
+                                    value={row.price}
+                                    onChange={e => updateVariantRow(row.id, 'price', e.target.value)}
+                                  />
+                                </div>
+                              </div>
+                              <button
+                                type="button"
+                                onClick={() => removeVariantRow(row.id)}
+                                className="w-9 h-9 flex-shrink-0 rounded-lg border border-error/30 text-error flex items-center justify-center hover:bg-error-container/20 transition-all"
+                              >
+                                <span className="material-symbols-outlined" style={{ fontSize: '18px' }}>close</span>
+                              </button>
+                            </div>
+                            {showSuggestion && (
+                              <button
+                                type="button"
+                                onClick={() => applySuggestion(row.id, suggestion!)}
+                                className="text-caption text-secondary font-bold hover:underline"
+                              >
+                                Sugerido: {fmt(suggestion!)} (click para usar)
+                              </button>
+                            )}
+                          </div>
+                        );
+                      })}
                       <button
                         type="button"
                         onClick={addVariantRow}
@@ -532,7 +631,7 @@ const getIconForCategory = (category: string, isBulk: boolean) => {
                 </div>
               )}
 
-              {/* Precio diferenciado por tipo */}
+              {/* Precio diferenciado por tipo (no aplica a productos por talle: se edita arriba, por talle) */}
               {editProduct.isBulk ? (
                 <div className="space-y-base">
                   <label className="block text-label-md font-bold text-primary">Precio por Kilo</label>
@@ -543,7 +642,7 @@ const getIconForCategory = (category: string, isBulk: boolean) => {
                       onChange={e => setEditProduct({ ...editProduct, pricePerKg: parseFloat(e.target.value) || 0 })} />
                   </div>
                 </div>
-              ) : (
+              ) : !editProduct.hasSizes ? (
                 <div className="space-y-base">
                   <label className="block text-label-md font-bold text-primary">Precio de Venta</label>
                   <div className="relative">
@@ -553,7 +652,7 @@ const getIconForCategory = (category: string, isBulk: boolean) => {
                       onChange={e => setEditProduct({ ...editProduct, price: parseFloat(e.target.value) || 0 })} />
                   </div>
                 </div>
-              )}
+              ) : null}
 
               {errorMsg && (
                 <div className="bg-error-container/30 border border-error/20 rounded-lg p-sm text-error text-caption font-bold">

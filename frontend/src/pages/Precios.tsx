@@ -10,11 +10,21 @@ interface Product {
   sku: string;
   icon: string;
   isBulk: boolean;
+  hasSizes: boolean;
   pricePerKg: number;
   stock: number;
   maxStock: number;
   currentKgStock?: number;
   initialKgStock?: number;
+}
+
+interface Variant {
+  id: number;
+  talle: string;
+  stock: number;
+  price: number | null;
+  costPrice?: number | null;
+  profitPercent?: number | null;
 }
 
 const fmt = (n: number) =>
@@ -32,26 +42,31 @@ export default function Precios() {
   const [saving, setSaving] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
 
+  const [variants, setVariants] = useState<Variant[]>([]);
+  const [loadingVariants, setLoadingVariants] = useState(false);
+
+  const loadProducts = async () => {
+    setLoading(true);
+    const data = await apiIntegrado.getProducts(token);
+    setProducts(data.map((p: any) => ({
+      id: p.id,
+      name: p.name,
+      price: Number(p.price ?? 0),
+      category: p.category,
+      sku: p.sku,
+      icon: p.icon || 'nutrition',
+      isBulk: p.isBulk === 1 || p.isBulk === true,
+      hasSizes: p.hasSizes === 1 || p.hasSizes === true,
+      pricePerKg: Number(p.pricePerKg ?? p.price_per_kg ?? 0),
+      stock: p.stock,
+      maxStock: p.maxStock,
+      currentKgStock: Number(p.currentKgStock ?? p.current_kg_stock ?? 0),
+      initialKgStock: Number(p.initialKgStock ?? p.initial_kg_stock ?? 0),
+    })));
+    setLoading(false);
+  };
+
   useEffect(() => {
-    const loadProducts = async () => {
-      setLoading(true);
-      const data = await apiIntegrado.getProducts(token);
-      setProducts(data.map((p: any) => ({
-        id: p.id,
-        name: p.name,
-        price: Number(p.price ?? 0),
-        category: p.category,
-        sku: p.sku,
-        icon: p.icon || 'nutrition',
-        isBulk: p.isBulk === 1 || p.isBulk === true,
-        pricePerKg: Number(p.pricePerKg ?? p.price_per_kg ?? 0),
-        stock: p.stock,
-        maxStock: p.maxStock,
-        currentKgStock: Number(p.currentKgStock ?? p.current_kg_stock ?? 0),
-        initialKgStock: Number(p.initialKgStock ?? p.initial_kg_stock ?? 0),
-      })));
-      setLoading(false);
-    };
     loadProducts();
   }, [token]);
 
@@ -66,11 +81,36 @@ export default function Precios() {
   const selected = products.find(p => p.id === selectedId) ?? null;
   const val = parseFloat(adjValue) || 0;
 
+  const handleSelectProduct = async (p: Product) => {
+    setSelectedId(p.id);
+    setAdjValue('');
+    setErrorMsg('');
+    if (p.hasSizes) {
+      setLoadingVariants(true);
+      try {
+        const data = await apiIntegrado.getProductVariants(token, p.id);
+        setVariants((data || []).map((v: any) => ({
+          id: v.id,
+          talle: v.talle,
+          stock: v.stock,
+          price: v.price !== null && v.price !== undefined ? Number(v.price) : null,
+          costPrice: v.costPrice,
+          profitPercent: v.profitPercent,
+        })));
+      } finally {
+        setLoadingVariants(false);
+      }
+    } else {
+      setVariants([]);
+    }
+  };
+
+  // --- Producto normal / por peso: precio único ---
   const currentPrice = selected
     ? (selected.isBulk ? selected.pricePerKg : selected.price)
     : 0;
 
-  const newPrice = selected
+  const newPrice = selected && !selected.hasSizes
     ? mode === 'percent'
       ? currentPrice * (1 + val / 100)
       : currentPrice + val
@@ -78,10 +118,55 @@ export default function Precios() {
 
   const diff = newPrice !== null && selected ? newPrice - currentPrice : null;
 
+  // --- Producto por talle: precio por cada variante ---
+  const variantsPreview = useMemo(() => {
+    if (!selected || !selected.hasSizes) return [];
+    return variants.map(v => {
+      const base = v.price ?? selected.price;
+      const computed = mode === 'percent' ? base * (1 + val / 100) : base + val;
+      return {
+        ...v,
+        basePrice: base,
+        newPrice: Math.max(0, computed),
+      };
+    });
+  }, [variants, selected, mode, val]);
+
   const handleConfirm = async () => {
-    if (!selected || newPrice === null || !adjValue) return;
+    if (!selected || !adjValue) return;
     setSaving(true);
     setErrorMsg('');
+
+    if (selected.hasSizes) {
+      const result = await apiIntegrado.updateProductVariants(
+        token,
+        selected.id,
+        variantsPreview.map(v => ({
+          talle: v.talle,
+          stock: v.stock,
+          price: Math.round(v.newPrice * 100) / 100,
+          costPrice: v.costPrice ?? null,
+          profitPercent: v.profitPercent ?? null,
+        }))
+      );
+
+      if (result) {
+        await loadProducts();
+        await handleSelectProduct({ ...selected });
+        setAdjValue('');
+        setConfirmed(true);
+        setTimeout(() => setConfirmed(false), 3000);
+      } else {
+        setErrorMsg('Error al actualizar los precios. Intenta de nuevo.');
+      }
+      setSaving(false);
+      return;
+    }
+
+    if (newPrice === null) {
+      setSaving(false);
+      return;
+    }
 
     const updatePayload = {
       name: selected.name,
@@ -133,7 +218,7 @@ export default function Precios() {
                 placeholder="Buscar por nombre o categoria"
                 className="w-full bg-surface border border-outline-variant rounded-lg p-base pl-12 focus:ring-2 focus:ring-primary focus:outline-none transition-all text-body-md"
                 value={search}
-                onChange={e => { setSearch(e.target.value); setSelectedId(null); }}
+                onChange={e => { setSearch(e.target.value); setSelectedId(null); setVariants([]); }}
               />
             </div>
             <div className="max-h-64 overflow-y-auto space-y-xs">
@@ -142,7 +227,7 @@ export default function Precios() {
               ) : filtered.map(p => (
                 <button
                   key={p.id}
-                  onClick={() => { setSelectedId(p.id); setAdjValue(''); setErrorMsg(''); }}
+                  onClick={() => handleSelectProduct(p)}
                   className={`w-full text-left px-sm py-base rounded-lg border transition-all flex items-center justify-between gap-sm ${
                     selectedId === p.id
                       ? 'border-primary bg-primary/5 text-primary font-bold'
@@ -151,10 +236,12 @@ export default function Precios() {
                 >
                   <div className="min-w-0">
                     <p className="text-label-md font-bold truncate">{p.name}</p>
-                    <p className="text-caption text-on-surface-variant">{p.category}{p.isBulk ? ' · Granel' : ''}</p>
+                    <p className="text-caption text-on-surface-variant">
+                      {p.category}{p.isBulk ? ' · Granel' : ''}{p.hasSizes ? ' · Por talle' : ''}
+                    </p>
                   </div>
                   <span className={`text-label-md font-bold flex-shrink-0 ${selectedId === p.id ? 'text-primary' : 'text-on-surface-variant'}`}>
-                    {p.isBulk ? `${fmt(p.pricePerKg)}/kg` : fmt(p.price)}
+                    {p.isBulk ? `${fmt(p.pricePerKg)}/kg` : p.hasSizes ? `desde ${fmt(p.price)}` : fmt(p.price)}
                   </span>
                 </button>
               ))}
@@ -183,6 +270,11 @@ export default function Precios() {
                 <span className="material-symbols-outlined">attach_money</span> Monto Fijo
               </button>
             </div>
+            {selected?.hasSizes && (
+              <p className="text-caption text-secondary font-bold mb-sm bg-secondary/5 rounded-lg p-sm">
+                Este ajuste se aplica a todos los talles de "{selected.name}" al mismo tiempo.
+              </p>
+            )}
             <div className="mb-lg">
               <label className="block text-label-md text-on-surface-variant mb-xs">
                 {mode === 'percent' ? 'Valor del Ajuste (%)' : 'Monto Fijo de Ajuste ($)'}
@@ -205,7 +297,7 @@ export default function Precios() {
             {errorMsg && <p className="text-error text-caption mb-sm">{errorMsg}</p>}
             <button
               onClick={handleConfirm}
-              disabled={!selected || !adjValue || newPrice === null || saving}
+              disabled={!selected || !adjValue || saving || (!selected.hasSizes && newPrice === null) || (selected.hasSizes && variants.length === 0)}
               className="w-full py-md bg-primary text-white rounded-lg font-bold flex items-center justify-center gap-sm active:scale-95 transition-transform shadow-md hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed"
             >
               <span className="material-symbols-outlined">check_circle</span>
@@ -243,61 +335,103 @@ export default function Precios() {
                     </div>
                     <div>
                       <p className="text-headline-md font-bold text-on-surface">{selected.name}</p>
-                      <p className="text-body-md text-on-surface-variant">{selected.category}{selected.isBulk ? ' · Precio por kg' : ''}</p>
+                      <p className="text-body-md text-on-surface-variant">
+                        {selected.category}{selected.isBulk ? ' · Precio por kg' : ''}{selected.hasSizes ? ' · Precio por talle' : ''}
+                      </p>
                     </div>
                   </div>
                 </div>
 
-                <div className="grid grid-cols-3 gap-md mb-md">
-                  <div className="bg-surface-container-low rounded-xl p-md border border-outline-variant/20 text-center">
-                    <p className="text-caption text-on-surface-variant uppercase tracking-wider mb-xs">Precio Actual</p>
-                    <p className="text-headline-md font-bold text-on-surface">
-                      {selected.isBulk ? `${fmt(selected.pricePerKg)}/kg` : fmt(selected.price)}
-                    </p>
-                  </div>
-                  <div className="flex items-center justify-center">
-                    <div className="flex flex-col items-center gap-xs">
-                      <span className="material-symbols-outlined text-primary" style={{ fontSize: '32px' }}>arrow_forward</span>
-                      {adjValue && diff !== null && (
-                        <span className={`text-label-md font-bold ${diff >= 0 ? 'text-secondary' : 'text-error'}`}>
-                          {diff >= 0 ? '+' : ''}{fmt(diff)}
-                        </span>
-                      )}
+                {selected.hasSizes ? (
+                  loadingVariants ? (
+                    <p className="text-center text-on-surface-variant py-md">Cargando talles...</p>
+                  ) : variants.length === 0 ? (
+                    <p className="text-center text-on-surface-variant py-md">Este producto no tiene talles cargados.</p>
+                  ) : (
+                    <div className="bg-surface-container-low rounded-xl border border-outline-variant/20 overflow-hidden">
+                      <table className="w-full text-left border-collapse">
+                        <thead>
+                          <tr className="bg-surface-container text-on-surface-variant border-b border-outline-variant/20">
+                            <th className="px-md py-sm text-label-md">Talle</th>
+                            <th className="px-md py-sm text-label-md text-right">Precio Actual</th>
+                            <th className="px-md py-sm text-label-md text-right">Precio Nuevo</th>
+                            <th className="px-md py-sm text-label-md text-right">Variación</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-outline-variant/10">
+                          {variantsPreview.map(v => {
+                            const vDiff = adjValue ? v.newPrice - v.basePrice : 0;
+                            return (
+                              <tr key={v.id}>
+                                <td className="px-md py-sm font-bold">{v.talle}</td>
+                                <td className="px-md py-sm text-right">{fmt(v.basePrice)}</td>
+                                <td className="px-md py-sm text-right font-bold text-primary">
+                                  {adjValue ? fmt(v.newPrice) : '—'}
+                                </td>
+                                <td className={`px-md py-sm text-right font-bold ${vDiff >= 0 ? 'text-secondary' : 'text-error'}`}>
+                                  {adjValue ? `${vDiff >= 0 ? '+' : ''}${fmt(vDiff)}` : '—'}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
                     </div>
-                  </div>
-                  <div className={`rounded-xl p-md border text-center transition-all ${newPrice !== null && adjValue ? 'bg-secondary-container/20 border-primary/30' : 'bg-surface-container-low border-outline-variant/20 opacity-50'}`}>
-                    <p className="text-caption text-primary uppercase tracking-wider mb-xs">Precio Nuevo</p>
-                    <p className="text-headline-md font-bold text-primary">
-                      {newPrice !== null && adjValue
-                        ? selected.isBulk
-                          ? `${fmt(Math.max(0, newPrice))}/kg`
-                          : fmt(Math.max(0, newPrice))
-                        : '—'}
-                    </p>
-                  </div>
-                </div>
+                  )
+                ) : (
+                  <>
+                    <div className="grid grid-cols-3 gap-md mb-md">
+                      <div className="bg-surface-container-low rounded-xl p-md border border-outline-variant/20 text-center">
+                        <p className="text-caption text-on-surface-variant uppercase tracking-wider mb-xs">Precio Actual</p>
+                        <p className="text-headline-md font-bold text-on-surface">
+                          {selected.isBulk ? `${fmt(selected.pricePerKg)}/kg` : fmt(selected.price)}
+                        </p>
+                      </div>
+                      <div className="flex items-center justify-center">
+                        <div className="flex flex-col items-center gap-xs">
+                          <span className="material-symbols-outlined text-primary" style={{ fontSize: '32px' }}>arrow_forward</span>
+                          {adjValue && diff !== null && (
+                            <span className={`text-label-md font-bold ${diff >= 0 ? 'text-secondary' : 'text-error'}`}>
+                              {diff >= 0 ? '+' : ''}{fmt(diff)}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                      <div className={`rounded-xl p-md border text-center transition-all ${newPrice !== null && adjValue ? 'bg-secondary-container/20 border-primary/30' : 'bg-surface-container-low border-outline-variant/20 opacity-50'}`}>
+                        <p className="text-caption text-primary uppercase tracking-wider mb-xs">Precio Nuevo</p>
+                        <p className="text-headline-md font-bold text-primary">
+                          {newPrice !== null && adjValue
+                            ? selected.isBulk
+                              ? `${fmt(Math.max(0, newPrice))}/kg`
+                              : fmt(Math.max(0, newPrice))
+                            : '—'}
+                        </p>
+                      </div>
+                    </div>
 
-                {newPrice !== null && adjValue && diff !== null && (
-                  <div className={`rounded-xl p-md border ${diff >= 0 ? 'bg-secondary-container/10 border-secondary/20' : 'bg-error-container/10 border-error/20'}`}>
-                    <div className="flex items-center gap-sm mb-sm">
-                      <span className={`material-symbols-outlined ${diff >= 0 ? 'text-secondary' : 'text-error'}`}>
-                        {diff >= 0 ? 'trending_up' : 'trending_down'}
-                      </span>
-                      <h3 className={`text-label-md font-bold uppercase tracking-wider ${diff >= 0 ? 'text-secondary' : 'text-error'}`}>
-                        {diff >= 0 ? 'Aumento de precio' : 'Reduccion de precio'}
-                      </h3>
-                    </div>
-                    <div className="grid grid-cols-2 gap-md text-sm">
-                      <div className="flex justify-between"><span className="text-on-surface-variant">Tipo de ajuste</span><span className="font-bold">{mode === 'percent' ? `${val}%` : fmt(val)}</span></div>
-                      <div className="flex justify-between"><span className="text-on-surface-variant">Variacion</span><span className={`font-bold ${diff >= 0 ? 'text-secondary' : 'text-error'}`}>{diff >= 0 ? '+' : ''}{fmt(diff)}</span></div>
-                      <div className="flex justify-between"><span className="text-on-surface-variant">Precio anterior</span><span className="font-bold">{fmt(currentPrice)}</span></div>
-                      <div className="flex justify-between"><span className="text-on-surface-variant">Precio nuevo</span><span className="font-bold text-primary">{fmt(Math.max(0, newPrice))}</span></div>
-                    </div>
-                  </div>
+                    {newPrice !== null && adjValue && diff !== null && (
+                      <div className={`rounded-xl p-md border ${diff >= 0 ? 'bg-secondary-container/10 border-secondary/20' : 'bg-error-container/10 border-error/20'}`}>
+                        <div className="flex items-center gap-sm mb-sm">
+                          <span className={`material-symbols-outlined ${diff >= 0 ? 'text-secondary' : 'text-error'}`}>
+                            {diff >= 0 ? 'trending_up' : 'trending_down'}
+                          </span>
+                          <h3 className={`text-label-md font-bold uppercase tracking-wider ${diff >= 0 ? 'text-secondary' : 'text-error'}`}>
+                            {diff >= 0 ? 'Aumento de precio' : 'Reduccion de precio'}
+                          </h3>
+                        </div>
+                        <div className="grid grid-cols-2 gap-md text-sm">
+                          <div className="flex justify-between"><span className="text-on-surface-variant">Tipo de ajuste</span><span className="font-bold">{mode === 'percent' ? `${val}%` : fmt(val)}</span></div>
+                          <div className="flex justify-between"><span className="text-on-surface-variant">Variacion</span><span className={`font-bold ${diff >= 0 ? 'text-secondary' : 'text-error'}`}>{diff >= 0 ? '+' : ''}{fmt(diff)}</span></div>
+                          <div className="flex justify-between"><span className="text-on-surface-variant">Precio anterior</span><span className="font-bold">{fmt(currentPrice)}</span></div>
+                          <div className="flex justify-between"><span className="text-on-surface-variant">Precio nuevo</span><span className="font-bold text-primary">{fmt(Math.max(0, newPrice))}</span></div>
+                        </div>
+                      </div>
+                    )}
+                  </>
                 )}
 
                 {!adjValue && (
-                  <div className="bg-surface-container rounded-xl p-md border border-outline-variant/10 text-center text-on-surface-variant opacity-60">
+                  <div className="bg-surface-container rounded-xl p-md border border-outline-variant/10 text-center text-on-surface-variant opacity-60 mt-md">
                     <p className="text-body-md">Ingrese el valor de ajuste en el panel izquierdo para ver la vista previa.</p>
                   </div>
                 )}

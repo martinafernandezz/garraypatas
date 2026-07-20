@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { apiIntegrado } from '../services/apiIntegrado';
 
@@ -35,6 +35,7 @@ interface Variant {
   id: number;
   talle: string;
   stock: number;
+  price?: number | null;
 }
 
 interface Customer {
@@ -77,7 +78,26 @@ const fmt = (n: number) => n.toLocaleString('es-AR', { style: 'currency', curren
 export default function NuevaVenta() {
   const { token } = useAuth();
   const [products, setProducts] = useState<Product[]>([]);
+  const [customers, setCustomers] = useState<Customer[]>([]);
+
+  // Buscador unificado
   const [search, setSearch] = useState('');
+  const [showResults, setShowResults] = useState(false);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+
+  // Selección contextual según tipo de producto
+  const [bulkSelected, setBulkSelected] = useState<Product | null>(null);
+  const [bulkMode, setBulkMode] = useState<'kg' | 'monto'>('kg');
+  const [bulkKg, setBulkKg] = useState('');
+  const [bulkGrams, setBulkGrams] = useState('');
+  const [montoAmount, setMontoAmount] = useState('');
+
+  const [talleSelected, setTalleSelected] = useState<Product | null>(null);
+  const [talleVariants, setTalleVariants] = useState<Variant[]>([]);
+  const [selectedTalle, setSelectedTalle] = useState<string | null>(null);
+  const [talleQty, setTalleQty] = useState('1');
+  const [loadingVariants, setLoadingVariants] = useState(false);
+
   const [cart, setCart] = useState<CartItem[]>([]);
   const [selectedPayment, setSelectedPayment] = useState<string | null>(null);
   const [installments, setInstallments] = useState(1);
@@ -88,26 +108,6 @@ export default function NuevaVenta() {
   const [saving, setSaving] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
 
-  const [bulkSearch, setBulkSearch] = useState('');
-  const [bulkSelected, setBulkSelected] = useState<Product | null>(null);
-  const [bulkKg, setBulkKg] = useState('');
-  const [bulkGrams, setBulkGrams] = useState('');
-  const [showBulkResults, setShowBulkResults] = useState(false);
-
-  const [calcProduct, setCalcProduct] = useState<Product | null>(null);
-  const [calcSearch, setCalcSearch] = useState('');
-  const [calcAmount, setCalcAmount] = useState('');
-  const [showCalcResults, setShowCalcResults] = useState(false);
-
-  const [talleSearch, setTalleSearch] = useState('');
-  const [talleSelected, setTalleSelected] = useState<Product | null>(null);
-  const [talleVariants, setTalleVariants] = useState<Variant[]>([]);
-  const [selectedTalle, setSelectedTalle] = useState<string | null>(null);
-  const [talleQty, setTalleQty] = useState('1');
-  const [showTalleResults, setShowTalleResults] = useState(false);
-  const [loadingVariants, setLoadingVariants] = useState(false);
-
-  const [customers, setCustomers] = useState<Customer[]>([]);
   const [customerSearch, setCustomerSearch] = useState('');
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
   const [showCustomerResults, setShowCustomerResults] = useState(false);
@@ -136,41 +136,39 @@ export default function NuevaVenta() {
     setTalleQty('1');
   }, [talleSelected, token]);
 
-  const normalProducts = products.filter(p => !getIsBulk(p) && !getHasSizes(p));
-  const bulkProducts = products.filter(p => getIsBulk(p));
-  const talleProducts = products.filter(p => getHasSizes(p));
-
   const filteredCatalog = search.length > 1
-    ? normalProducts.filter(p =>
+    ? products.filter(p =>
         p.name.toLowerCase().includes(search.toLowerCase()) ||
         p.sku.includes(search)
       )
     : [];
 
-  const filteredBulk = bulkSearch.length > 0
-    ? bulkProducts.filter(p => p.name.toLowerCase().includes(bulkSearch.toLowerCase()))
-    : bulkProducts;
+  const bulkTotalKg = (parseFloat(bulkKg) || 0) + (parseFloat(bulkGrams) || 0) / 1000;
+  const bulkTotalPrice = bulkSelected ? getPricePerKg(bulkSelected) * bulkTotalKg : 0;
 
-  const filteredCalc = calcSearch.length > 0
-    ? bulkProducts.filter(p => p.name.toLowerCase().includes(calcSearch.toLowerCase()))
-    : bulkProducts;
-
-  const filteredTalleProducts = talleSearch.length > 0
-    ? talleProducts.filter(p => p.name.toLowerCase().includes(talleSearch.toLowerCase()))
-    : talleProducts;
+  const montoGrams = bulkSelected && montoAmount
+    ? (parseFloat(montoAmount) / (getPricePerKg(bulkSelected) || 1)) * 1000
+    : null;
 
   const filteredCustomers = customerSearch.length > 0
     ? customers.filter(c => `${c.first_name} ${c.last_name}`.toLowerCase().includes(customerSearch.toLowerCase()))
     : customers;
 
-  const bulkTotalKg = (parseFloat(bulkKg) || 0) + (parseFloat(bulkGrams) || 0) / 1000;
-  const bulkTotalPrice = bulkSelected ? getPricePerKg(bulkSelected) * bulkTotalKg : 0;
-
-  const calcGrams = calcProduct && calcAmount
-    ? (parseFloat(calcAmount) / (getPricePerKg(calcProduct) || 1)) * 1000
-    : null;
-
   const selectedVariant = talleVariants.find(v => v.talle === selectedTalle) || null;
+
+  const clearBulkPanel = () => {
+    setBulkSelected(null);
+    setBulkKg('');
+    setBulkGrams('');
+    setMontoAmount('');
+    setBulkMode('kg');
+  };
+
+  const clearTallePanel = () => {
+    setTalleSelected(null);
+    setSelectedTalle(null);
+    setTalleQty('1');
+  };
 
   const addToCart = (item: Product) => {
     setCart(prev => {
@@ -178,10 +176,36 @@ export default function NuevaVenta() {
       if (existing) return prev.map(c => c.id === item.id && !c.talle ? { ...c, qty: c.qty + 1 } : c);
       return [...prev, { id: item.id, name: item.name, price: Number(item.price), qty: 1 }];
     });
-    setSearch('');
   };
 
-  const addBulk = useCallback(() => {
+  const handleSelectProduct = (item: Product) => {
+    if (getIsBulk(item)) {
+      clearTallePanel();
+      setBulkSelected(item);
+      setBulkMode('kg');
+      setBulkKg('');
+      setBulkGrams('');
+      setMontoAmount('');
+    } else if (getHasSizes(item)) {
+      clearBulkPanel();
+      setTalleSelected(item);
+    } else {
+      addToCart(item);
+    }
+    setSearch('');
+    setShowResults(false);
+  };
+
+  const handleSearchKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+      const exactMatch = products.find(p => p.sku === search.trim());
+      if (exactMatch) {
+        handleSelectProduct(exactMatch);
+      }
+    }
+  };
+
+  const addBulkByWeight = () => {
     if (!bulkSelected || bulkTotalKg <= 0) return;
     const pricePerKg = getPricePerKg(bulkSelected);
     setCart(prev => [...prev, {
@@ -193,16 +217,30 @@ export default function NuevaVenta() {
       pricePerKg,
       kgQty: bulkTotalKg,
     }]);
-    setBulkSelected(null);
-    setBulkSearch('');
-    setBulkKg('');
-    setBulkGrams('');
-  }, [bulkSelected, bulkTotalKg]);
+    clearBulkPanel();
+  };
+
+  const addBulkByMonto = () => {
+    if (!bulkSelected || montoGrams === null || montoGrams <= 0) return;
+    const kgQty = montoGrams / 1000;
+    const pricePerKg = getPricePerKg(bulkSelected);
+    setCart(prev => [...prev, {
+      id: bulkSelected.id,
+      name: bulkSelected.name,
+      price: pricePerKg * kgQty,
+      qty: 1,
+      isBulk: true,
+      pricePerKg,
+      kgQty,
+    }]);
+    clearBulkPanel();
+  };
 
   const addTalleToCart = () => {
     if (!talleSelected || !selectedTalle || !selectedVariant) return;
     const qty = Math.max(1, parseInt(talleQty) || 1);
     if (qty > selectedVariant.stock) return;
+    const price = Number(selectedVariant.price ?? talleSelected.price);
 
     setCart(prev => {
       const existing = prev.find(c => c.id === talleSelected.id && c.talle === selectedTalle);
@@ -212,16 +250,13 @@ export default function NuevaVenta() {
       return [...prev, {
         id: talleSelected.id,
         name: `${talleSelected.name} - Talle ${selectedTalle}`,
-        price: Number(talleSelected.price),
+        price,
         qty,
         talle: selectedTalle,
       }];
     });
 
-    setTalleSelected(null);
-    setTalleSearch('');
-    setSelectedTalle(null);
-    setTalleQty('1');
+    clearTallePanel();
   };
 
   const updateQty = (id: number, delta: number, talle?: string) => {
@@ -314,6 +349,11 @@ export default function NuevaVenta() {
     }
   };
 
+  const toggleCls = (active: boolean) =>
+    `px-md py-sm rounded-lg text-label-md font-bold border transition-all ${
+      active ? 'bg-primary text-white border-primary' : 'border-outline-variant text-on-surface-variant hover:border-primary hover:text-primary'
+    }`;
+
   return (
     <div className="flex gap-gutter p-lg h-[calc(100vh-4rem)] overflow-hidden">
       <div className="flex-grow flex flex-col gap-lg overflow-hidden overflow-y-auto custom-scrollbar">
@@ -324,26 +364,37 @@ export default function NuevaVenta() {
             <div className="relative group">
               <span className="absolute left-4 top-1/2 -translate-y-1/2 material-symbols-outlined text-outline group-focus-within:text-primary">barcode_scanner</span>
               <input
+                ref={searchInputRef}
                 className="w-full pl-12 pr-4 py-5 bg-surface-container-low border-2 border-outline-variant/40 rounded-xl text-body-lg focus:outline-none focus:border-primary focus:ring-4 focus:ring-primary/10 transition-all placeholder:text-outline/60"
                 placeholder="Buscar por codigo, nombre o marca..."
                 value={search}
-                onChange={e => setSearch(e.target.value)}
+                onChange={e => { setSearch(e.target.value); setShowResults(true); }}
+                onFocus={() => setShowResults(true)}
+                onKeyDown={handleSearchKeyDown}
                 autoFocus
               />
             </div>
-            {filteredCatalog.length > 0 && (
-              <div className="mt-2 bg-surface border border-outline-variant/30 rounded-xl shadow-lg overflow-hidden text-left">
+            {showResults && filteredCatalog.length > 0 && (
+              <div className="mt-2 bg-surface border border-outline-variant/30 rounded-xl shadow-lg overflow-hidden text-left max-h-80 overflow-y-auto custom-scrollbar">
                 {filteredCatalog.map(item => (
                   <button
                     key={item.id}
-                    onClick={() => addToCart(item)}
+                    onClick={() => handleSelectProduct(item)}
                     className="w-full flex justify-between items-center px-md py-sm hover:bg-secondary-container/20 transition-colors border-b border-outline-variant/10 last:border-0"
                   >
                     <div>
                       <span className="text-body-md font-bold">{item.name}</span>
-                      <span className="text-caption text-on-surface-variant ml-sm">Stock: {item.stock}</span>
+                      {getIsBulk(item) ? (
+                        <span className="text-caption text-tertiary ml-sm">Granel — {getCurrentKgStock(item).toFixed(2)} kg</span>
+                      ) : getHasSizes(item) ? (
+                        <span className="text-caption text-secondary ml-sm">Con talles</span>
+                      ) : (
+                        <span className="text-caption text-on-surface-variant ml-sm">Stock: {item.stock}</span>
+                      )}
                     </div>
-                    <span className="text-label-md text-primary font-bold">{fmt(Number(item.price))}</span>
+                    <span className="text-label-md text-primary font-bold">
+                      {getIsBulk(item) ? `${fmt(getPricePerKg(item))}/kg` : getHasSizes(item) ? `desde ${fmt(Number(item.price))}` : fmt(Number(item.price))}
+                    </span>
                   </button>
                 ))}
               </div>
@@ -351,47 +402,31 @@ export default function NuevaVenta() {
           </div>
         </section>
 
-        <section className="bg-tertiary-fixed/20 border border-outline-variant/20 rounded-xl p-lg">
-          <div className="flex items-center gap-sm mb-md">
-            <span className="material-symbols-outlined text-tertiary">scale</span>
-            <h3 className="text-headline-md font-bold text-tertiary">Alimento por peso</h3>
-          </div>
-
-          <div className="space-y-md">
-            <div className="relative">
-              <label className="block text-label-md text-on-surface-variant mb-xs">Buscar alimento</label>
-              <div className="relative">
-                <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-on-surface-variant" style={{ fontSize: '18px' }}>search</span>
-                <input
-                  className="w-full pl-10 pr-4 py-3 bg-white border border-outline-variant rounded-lg focus:ring-2 focus:ring-tertiary/20 focus:border-tertiary transition-all text-body-md"
-                  placeholder="Escribi el nombre del alimento..."
-                  value={bulkSearch}
-                  onChange={e => { setBulkSearch(e.target.value); setShowBulkResults(true); setBulkSelected(null); }}
-                  onFocus={() => setShowBulkResults(true)}
-                />
-              </div>
-              {showBulkResults && filteredBulk.length > 0 && (
-                <div className="absolute z-10 w-full mt-1 bg-white border border-outline-variant/30 rounded-xl shadow-lg overflow-hidden">
-                  {filteredBulk.map(p => (
-                    <button
-                      key={p.id}
-                      onClick={() => { setBulkSelected(p); setBulkSearch(p.name); setShowBulkResults(false); }}
-                      className="w-full flex justify-between items-center px-md py-sm hover:bg-tertiary/10 transition-colors border-b border-outline-variant/10 last:border-0 text-left"
-                    >
-                      <div>
-                        <span className="text-body-md font-bold">{p.name}</span>
-                        <span className="text-caption text-on-surface-variant block">Stock: {getCurrentKgStock(p).toFixed(2)} kg</span>
-                      </div>
-                      <span className="text-label-md text-tertiary font-bold">{fmt(getPricePerKg(p))}/kg</span>
-                    </button>
-                  ))}
+        {/* PANEL: producto por peso */}
+        {bulkSelected && (
+          <section className="bg-tertiary-fixed/20 border border-outline-variant/20 rounded-xl p-lg">
+            <div className="flex items-start justify-between mb-md">
+              <div className="flex items-center gap-sm">
+                <span className="material-symbols-outlined text-tertiary">scale</span>
+                <div>
+                  <h3 className="text-headline-md font-bold text-tertiary">{bulkSelected.name}</h3>
+                  <p className="text-caption text-on-surface-variant">
+                    {fmt(getPricePerKg(bulkSelected))}/kg · Stock: {getCurrentKgStock(bulkSelected).toFixed(2)} kg
+                  </p>
                 </div>
-              )}
+              </div>
+              <button onClick={clearBulkPanel} className="material-symbols-outlined text-on-surface-variant hover:text-error transition-colors">
+                close
+              </button>
             </div>
 
-            {bulkSelected && (
+            <div className="flex gap-sm mb-md">
+              <button onClick={() => setBulkMode('kg')} className={toggleCls(bulkMode === 'kg')}>Por Kilos/Gramos</button>
+              <button onClick={() => setBulkMode('monto')} className={toggleCls(bulkMode === 'monto')}>Por Monto ($)</button>
+            </div>
+
+            {bulkMode === 'kg' ? (
               <div className="bg-white rounded-lg p-md border border-tertiary/20">
-                <p className="text-label-md font-bold text-tertiary mb-sm">{bulkSelected.name} — {fmt(getPricePerKg(bulkSelected))}/kg</p>
                 <div className="grid grid-cols-3 gap-md items-end">
                   <div>
                     <label className="block text-caption text-on-surface-variant mb-xs">Kilos</label>
@@ -418,7 +453,7 @@ export default function NuevaVenta() {
                     />
                   </div>
                   <button
-                    onClick={addBulk}
+                    onClick={addBulkByWeight}
                     disabled={bulkTotalKg <= 0}
                     className="py-2 bg-tertiary text-white rounded-lg font-bold flex items-center justify-center gap-xs hover:opacity-90 transition-all shadow-sm active:scale-95 disabled:opacity-40"
                   >
@@ -433,142 +468,8 @@ export default function NuevaVenta() {
                   </div>
                 )}
               </div>
-            )}
-          </div>
-        </section>
-
-        <section className="bg-primary/5 border border-outline-variant/20 rounded-xl p-lg">
-          <div className="flex items-center gap-sm mb-md">
-            <span className="material-symbols-outlined text-primary">straighten</span>
-            <h3 className="text-headline-md font-bold text-primary">Producto por talle</h3>
-          </div>
-
-          <div className="space-y-md">
-            <div className="relative">
-              <label className="block text-label-md text-on-surface-variant mb-xs">Buscar producto</label>
-              <div className="relative">
-                <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-on-surface-variant" style={{ fontSize: '18px' }}>search</span>
-                <input
-                  className="w-full pl-10 pr-4 py-3 bg-white border border-outline-variant rounded-lg focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all text-body-md"
-                  placeholder="Escribi el nombre del producto..."
-                  value={talleSearch}
-                  onChange={e => { setTalleSearch(e.target.value); setShowTalleResults(true); setTalleSelected(null); }}
-                  onFocus={() => setShowTalleResults(true)}
-                />
-              </div>
-              {showTalleResults && filteredTalleProducts.length > 0 && (
-                <div className="absolute z-10 w-full mt-1 bg-white border border-outline-variant/30 rounded-xl shadow-lg overflow-hidden">
-                  {filteredTalleProducts.map(p => (
-                    <button
-                      key={p.id}
-                      onClick={() => { setTalleSelected(p); setTalleSearch(p.name); setShowTalleResults(false); }}
-                      className="w-full flex justify-between items-center px-md py-sm hover:bg-primary/10 transition-colors border-b border-outline-variant/10 last:border-0 text-left"
-                    >
-                      <span className="text-body-md font-bold">{p.name}</span>
-                      <span className="text-label-md text-primary font-bold">{fmt(Number(p.price))}</span>
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            {talleSelected && (
-              <div className="bg-white rounded-lg p-md border border-primary/20">
-                <p className="text-label-md font-bold text-primary mb-sm">{talleSelected.name} — {fmt(Number(talleSelected.price))}</p>
-
-                {loadingVariants ? (
-                  <p className="text-caption text-on-surface-variant">Cargando talles...</p>
-                ) : talleVariants.length === 0 ? (
-                  <p className="text-caption text-on-surface-variant">Este producto no tiene talles cargados.</p>
-                ) : (
-                  <>
-                    <div className="flex flex-wrap gap-xs mb-sm">
-                      {talleVariants.map(v => (
-                        <button
-                          key={v.talle}
-                          onClick={() => setSelectedTalle(v.talle)}
-                          disabled={v.stock <= 0}
-                          className={`px-md py-2 rounded-lg border font-bold text-label-md transition-all ${
-                            selectedTalle === v.talle
-                              ? 'bg-primary text-white border-primary'
-                              : v.stock <= 0
-                              ? 'border-outline-variant/30 text-outline-variant/50 cursor-not-allowed line-through'
-                              : 'border-outline-variant text-on-surface-variant hover:border-primary hover:text-primary'
-                          }`}
-                        >
-                          {v.talle} ({v.stock})
-                        </button>
-                      ))}
-                    </div>
-
-                    {selectedTalle && (
-                      <div className="grid grid-cols-3 gap-md items-end">
-                        <div className="col-span-1">
-                          <label className="block text-caption text-on-surface-variant mb-xs">Cantidad</label>
-                          <input
-                            className="w-full px-md py-2 border border-outline-variant rounded-lg text-body-md font-bold text-right"
-                            type="number"
-                            min="1"
-                            max={selectedVariant?.stock ?? 1}
-                            value={talleQty}
-                            onChange={e => setTalleQty(e.target.value)}
-                          />
-                        </div>
-                        <button
-                          onClick={addTalleToCart}
-                          disabled={!selectedVariant || (parseInt(talleQty) || 0) > selectedVariant.stock}
-                          className="col-span-2 py-2 bg-primary text-white rounded-lg font-bold flex items-center justify-center gap-xs hover:opacity-90 transition-all shadow-sm active:scale-95 disabled:opacity-40"
-                        >
-                          <span className="material-symbols-outlined">add</span>
-                          Añadir talle {selectedTalle}
-                        </button>
-                      </div>
-                    )}
-                  </>
-                )}
-              </div>
-            )}
-          </div>
-        </section>
-
-        <section className="bg-secondary/5 border border-secondary/20 rounded-xl p-lg">
-          <div className="flex items-center gap-sm mb-md">
-            <span className="material-symbols-outlined text-secondary">calculate</span>
-            <h3 className="text-headline-md font-bold text-secondary">Calculadora por monto</h3>
-          </div>
-          <p className="text-caption text-on-surface-variant mb-md">Ingresa el monto que quiere gastar el cliente y te dice cuantos gramos se lleva.</p>
-
-          <div className="space-y-md">
-            <div className="relative">
-              <label className="block text-label-md text-on-surface-variant mb-xs">Alimento</label>
-              <div className="relative">
-                <span className="material-symbols-outlined absolute left-3 top-1/2 -translate-y-1/2 text-on-surface-variant" style={{ fontSize: '18px' }}>search</span>
-                <input
-                  className="w-full pl-10 pr-4 py-3 bg-white border border-outline-variant rounded-lg text-body-md"
-                  placeholder="Buscar alimento..."
-                  value={calcSearch}
-                  onChange={e => { setCalcSearch(e.target.value); setShowCalcResults(true); setCalcProduct(null); }}
-                  onFocus={() => setShowCalcResults(true)}
-                />
-              </div>
-              {showCalcResults && filteredCalc.length > 0 && (
-                <div className="absolute z-10 w-full mt-1 bg-white border border-outline-variant/30 rounded-xl shadow-lg overflow-hidden">
-                  {filteredCalc.map(p => (
-                    <button
-                      key={p.id}
-                      onClick={() => { setCalcProduct(p); setCalcSearch(p.name); setShowCalcResults(false); }}
-                      className="w-full flex justify-between items-center px-md py-sm hover:bg-secondary/10 transition-colors border-b border-outline-variant/10 last:border-0 text-left"
-                    >
-                      <span className="text-body-md font-bold">{p.name}</span>
-                      <span className="text-label-md text-secondary font-bold">{fmt(getPricePerKg(p))}/kg</span>
-                    </button>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            {calcProduct && (
-              <div className="bg-white rounded-lg p-md border border-secondary/20">
+            ) : (
+              <div className="bg-white rounded-lg p-md border border-tertiary/20">
                 <div className="flex gap-md items-end">
                   <div className="flex-grow">
                     <label className="block text-caption text-on-surface-variant mb-xs">Monto ($)</label>
@@ -579,47 +480,106 @@ export default function NuevaVenta() {
                         placeholder="0"
                         type="number"
                         min="0"
-                        value={calcAmount}
-                        onChange={e => setCalcAmount(e.target.value)}
+                        value={montoAmount}
+                        onChange={e => setMontoAmount(e.target.value)}
                       />
                     </div>
                   </div>
-                  {calcGrams !== null && calcGrams > 0 && (
-                    <div className="flex-grow bg-secondary/10 rounded-lg p-sm text-center">
+                  {montoGrams !== null && montoGrams > 0 && (
+                    <div className="flex-grow bg-tertiary/10 rounded-lg p-sm text-center">
                       <p className="text-caption text-on-surface-variant">Se lleva</p>
-                      <p className="text-headline-md font-bold text-secondary">
-                        {calcGrams >= 1000 ? `${(calcGrams / 1000).toFixed(2)} kg` : `${calcGrams.toFixed(0)} gr`}
+                      <p className="text-headline-md font-bold text-tertiary">
+                        {montoGrams >= 1000 ? `${(montoGrams / 1000).toFixed(2)} kg` : `${montoGrams.toFixed(0)} gr`}
                       </p>
                     </div>
                   )}
                 </div>
-                {calcGrams !== null && calcGrams > 0 && (
+                {montoGrams !== null && montoGrams > 0 && (
                   <button
-                    onClick={() => {
-                      const kgQty = calcGrams / 1000;
-                      const pricePerKg = getPricePerKg(calcProduct);
-                      setCart(prev => [...prev, {
-                        id: calcProduct.id,
-                        name: calcProduct.name,
-                        price: pricePerKg * kgQty,
-                        qty: 1,
-                        isBulk: true,
-                        pricePerKg,
-                        kgQty,
-                      }]);
-                      setCalcAmount('');
-                      setCalcSearch('');
-                      setCalcProduct(null);
-                    }}
-                    className="w-full mt-sm py-2 bg-secondary text-white rounded-lg font-bold text-caption hover:opacity-90 transition-all active:scale-95"
+                    onClick={addBulkByMonto}
+                    className="w-full mt-sm py-2 bg-tertiary text-white rounded-lg font-bold text-caption hover:opacity-90 transition-all active:scale-95"
                   >
                     Agregar al carrito
                   </button>
                 )}
               </div>
             )}
+          </section>
+        )}
+
+        {/* PANEL: producto por talle */}
+        {talleSelected && (
+          <section className="bg-primary/5 border border-outline-variant/20 rounded-xl p-lg">
+            <div className="flex items-start justify-between mb-md">
+              <div className="flex items-center gap-sm">
+                <span className="material-symbols-outlined text-primary">straighten</span>
+                <h3 className="text-headline-md font-bold text-primary">{talleSelected.name}</h3>
+              </div>
+              <button onClick={clearTallePanel} className="material-symbols-outlined text-on-surface-variant hover:text-error transition-colors">
+                close
+              </button>
+            </div>
+
+            {loadingVariants ? (
+              <p className="text-caption text-on-surface-variant">Cargando talles...</p>
+            ) : talleVariants.length === 0 ? (
+              <p className="text-caption text-on-surface-variant">Este producto no tiene talles cargados.</p>
+            ) : (
+              <div className="bg-white rounded-lg p-md border border-primary/20">
+                <div className="flex flex-wrap gap-xs mb-sm">
+                  {talleVariants.map(v => (
+                    <button
+                      key={v.talle}
+                      onClick={() => setSelectedTalle(v.talle)}
+                      disabled={v.stock <= 0}
+                      className={`px-md py-2 rounded-lg border font-bold text-label-md transition-all text-left ${
+                        selectedTalle === v.talle
+                          ? 'bg-primary text-white border-primary'
+                          : v.stock <= 0
+                          ? 'border-outline-variant/30 text-outline-variant/50 cursor-not-allowed line-through'
+                          : 'border-outline-variant text-on-surface-variant hover:border-primary hover:text-primary'
+                      }`}
+                    >
+                      <span className="block">{v.talle} ({v.stock})</span>
+                      <span className="block text-caption font-normal">{fmt(Number(v.price ?? talleSelected.price))}</span>
+                    </button>
+                  ))}
+                </div>
+
+                {selectedTalle && (
+                  <div className="grid grid-cols-3 gap-md items-end">
+                    <div className="col-span-1">
+                      <label className="block text-caption text-on-surface-variant mb-xs">Cantidad</label>
+                      <input
+                        className="w-full px-md py-2 border border-outline-variant rounded-lg text-body-md font-bold text-right"
+                        type="number"
+                        min="1"
+                        max={selectedVariant?.stock ?? 1}
+                        value={talleQty}
+                        onChange={e => setTalleQty(e.target.value)}
+                      />
+                    </div>
+                    <button
+                      onClick={addTalleToCart}
+                      disabled={!selectedVariant || (parseInt(talleQty) || 0) > selectedVariant.stock}
+                      className="col-span-2 py-2 bg-primary text-white rounded-lg font-bold flex items-center justify-center gap-xs hover:opacity-90 transition-all shadow-sm active:scale-95 disabled:opacity-40"
+                    >
+                      <span className="material-symbols-outlined">add</span>
+                      Añadir talle {selectedTalle}
+                    </button>
+                  </div>
+                )}
+              </div>
+            )}
+          </section>
+        )}
+
+        {!bulkSelected && !talleSelected && (
+          <div className="flex-grow flex flex-col items-center justify-center text-center opacity-40 py-xl">
+            <span className="material-symbols-outlined" style={{ fontSize: '64px' }}>search</span>
+            <p className="text-body-md italic mt-sm">Buscá un producto arriba para agregarlo a la venta</p>
           </div>
-        </section>
+        )}
       </div>
 
       <div className="w-96 flex flex-col gap-md flex-shrink-0 overflow-y-auto custom-scrollbar">

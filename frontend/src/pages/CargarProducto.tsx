@@ -27,6 +27,9 @@ interface SizeRow {
   id: string;
   talle: string;
   stock: string;
+  costo: string;
+  gananciaPercent: string;
+  price: string;
 }
 
 interface TalleForm {
@@ -41,8 +44,18 @@ interface TalleForm {
 const EMPTY_NORMAL: NormalForm = { name: '', sku: '', category: '', purchasePrice: '', profitPercent: '', initialStock: '' };
 const EMPTY_PESO: PesoForm = { name: '', sku: '', category: '', bolsaPrice: '', costPerKg: '', profitPerKgPercent: '', kgPerBolsa: '' };
 
-const newSizeRow = (): SizeRow => ({ id: crypto.randomUUID(), talle: '', stock: '' });
+const newSizeRow = (): SizeRow => ({ id: crypto.randomUUID(), talle: '', stock: '', costo: '', gananciaPercent: '', price: '' });
 const createEmptyTalle = (): TalleForm => ({ name: '', sku: '', category: '', purchasePrice: '', profitPercent: '', sizes: [newSizeRow()] });
+
+// Calcula el precio sugerido de una fila: usa el costo/% propio de la fila si está cargado,
+// si no, cae al costo/% general del producto.
+function suggestedPrice(row: SizeRow, generalCost: string, generalPct: string): number | null {
+  const costo = parseFloat(row.costo) || parseFloat(generalCost) || 0;
+  const pctRaw = row.gananciaPercent !== '' ? row.gananciaPercent : generalPct;
+  const pct = parseFloat(pctRaw) || 0;
+  if (costo > 0 && pct > 0) return costo * (1 + pct / 100);
+  return null;
+}
 
 export default function CargarProducto() {
   const { token } = useAuth();
@@ -68,9 +81,6 @@ export default function CargarProducto() {
   const salePriceKg = costKg > 0 && profitKgPct > 0 ? costKg * (1 + profitKgPct / 100) : null;
 
   // Talle form derived values
-  const costTalle = parseFloat(talleForm.purchasePrice) || 0;
-  const pctTalle = parseFloat(talleForm.profitPercent) || 0;
-  const salePriceTalle = costTalle > 0 && pctTalle > 0 ? costTalle * (1 + pctTalle / 100) : null;
   const totalStockTalle = talleForm.sizes.reduce((acc, s) => acc + (parseInt(s.stock) || 0), 0);
 
   useEffect(() => {
@@ -93,8 +103,11 @@ export default function CargarProducto() {
 
   const addSizeRow = () => setTalleForm(prev => ({ ...prev, sizes: [...prev.sizes, newSizeRow()] }));
   const removeSizeRow = (id: string) => setTalleForm(prev => ({ ...prev, sizes: prev.sizes.filter(s => s.id !== id) }));
-  const updateSizeRow = (id: string, field: 'talle' | 'stock', value: string) =>
+  const updateSizeRow = (id: string, field: 'talle' | 'stock' | 'costo' | 'gananciaPercent' | 'price', value: string) =>
     setTalleForm(prev => ({ ...prev, sizes: prev.sizes.map(s => s.id === id ? { ...s, [field]: value } : s) }));
+
+  const applySuggestion = (id: string, value: number) =>
+    setTalleForm(prev => ({ ...prev, sizes: prev.sizes.map(s => s.id === id ? { ...s, price: value.toFixed(2) } : s) }));
 
   const showNotification = (msg: string, error = false) => {
     setToastMsg(msg);
@@ -171,16 +184,32 @@ export default function CargarProducto() {
     }
     setLoading(true);
     try {
+      const sizesPayload = validSizes.map(s => {
+        const effectiveCost = s.costo !== '' ? parseFloat(s.costo) : (talleForm.purchasePrice !== '' ? parseFloat(talleForm.purchasePrice) : null);
+        const effectivePct = s.gananciaPercent !== '' ? parseFloat(s.gananciaPercent) : (talleForm.profitPercent !== '' ? parseFloat(talleForm.profitPercent) : null);
+        const suggestion = suggestedPrice(s, talleForm.purchasePrice, talleForm.profitPercent);
+        const finalPrice = s.price !== '' ? parseFloat(s.price) : (suggestion ?? 0);
+        return {
+          talle: s.talle.trim(),
+          stock: parseInt(s.stock) || 0,
+          price: finalPrice,
+          costPrice: effectiveCost,
+          profitPercent: effectivePct,
+        };
+      });
+
+      const basePrice = Math.min(...sizesPayload.map(s => s.price).filter(p => p > 0));
+
       const result = await apiIntegrado.createProduct(token, {
         name: talleForm.name,
         sku: talleForm.sku,
         category: talleForm.category,
-        price: salePriceTalle ?? costTalle,
+        price: isFinite(basePrice) ? basePrice : 0,
         stock: 0,
         maxStock: 50,
         icon: 'inventory_2',
         hasSizes: true,
-        sizes: validSizes.map(s => ({ talle: s.talle.trim(), stock: parseInt(s.stock) || 0 })),
+        sizes: sizesPayload,
       });
 
       if (result) {
@@ -205,6 +234,7 @@ export default function CargarProducto() {
   };
 
   const inputCls = 'w-full bg-background border border-secondary/20 rounded-lg p-base text-body-md focus:outline-none focus:border-primary focus:ring-2 focus:ring-primary/10 focus:bg-tertiary-fixed/10 transition-all';
+  const inputSmCls = 'w-full bg-background border border-secondary/20 rounded-lg p-xs text-caption focus:outline-none focus:border-primary focus:ring-2 focus:ring-primary/10 transition-all';
 
   const categorySelect = (value: string, onChange: (e: React.ChangeEvent<HTMLSelectElement>) => void) => (
     <select className={inputCls + ' appearance-none'} value={value} onChange={onChange}>
@@ -460,82 +490,135 @@ export default function CargarProducto() {
 
               <div className="col-span-1 md:col-span-2 pt-base">
                 <div className="border-l-4 border-primary pl-base mb-base">
-                  <h3 className="text-label-md font-bold text-primary uppercase tracking-wider">Gestión de Precios</h3>
+                  <h3 className="text-label-md font-bold text-primary uppercase tracking-wider">Costo y Ganancia General (opcional)</h3>
                 </div>
+                <p className="text-caption text-on-surface-variant mb-base">
+                  Usalo si el precio <strong>no varía</strong> entre talles. Sirve como respaldo para calcular el precio sugerido de los talles que no tengan su propio costo/ganancia cargado.
+                </p>
               </div>
 
               <div className="space-y-base bg-surface-container/30 p-base rounded-lg border border-outline-variant/10">
-                <label className="block text-label-md font-bold text-on-surface-variant">Precio de Compra (Costo)</label>
+                <label className="block text-label-md font-bold text-on-surface-variant">Costo General</label>
                 <div className="relative">
                   <span className="absolute left-base top-1/2 -translate-y-1/2 text-on-surface-variant font-bold">$</span>
-                  <input className={inputCls + ' pl-8'} placeholder="0.00" required step="0.01" type="number" min="0" value={talleForm.purchasePrice} onChange={changeTalle('purchasePrice')} />
+                  <input className={inputCls + ' pl-8'} placeholder="0.00" step="0.01" type="number" min="0" value={talleForm.purchasePrice} onChange={changeTalle('purchasePrice')} />
                 </div>
               </div>
 
               <div className="space-y-base bg-secondary-container/10 p-base rounded-lg border border-secondary/10">
-                <label className="block text-label-md font-bold text-primary">Porcentaje de Ganancia</label>
-                <div className="flex gap-sm items-stretch">
-                  <div className="relative flex-grow">
-                    <input className={inputCls + ' pr-8 font-bold'} placeholder="0" step="0.5" type="number" min="0" value={talleForm.profitPercent} onChange={changeTalle('profitPercent')} />
-                    <span className="absolute right-base top-1/2 -translate-y-1/2 text-primary font-bold">%</span>
-                  </div>
-                  <div className={`flex-grow flex items-center justify-between bg-background border rounded-lg px-base transition-all ${salePriceTalle ? 'border-primary/40 bg-secondary-container/20' : 'border-secondary/20 opacity-50'}`}>
-                    <span className="text-caption text-on-surface-variant font-bold">Precio Final</span>
-                    <span className="text-body-md font-bold text-primary">
-                      {salePriceTalle ? `$${salePriceTalle.toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '—'}
-                    </span>
-                  </div>
+                <label className="block text-label-md font-bold text-primary">Ganancia General (%)</label>
+                <div className="relative">
+                  <input className={inputCls + ' pr-8 font-bold'} placeholder="0" step="0.5" type="number" min="0" value={talleForm.profitPercent} onChange={changeTalle('profitPercent')} />
+                  <span className="absolute right-base top-1/2 -translate-y-1/2 text-primary font-bold">%</span>
                 </div>
-                {salePriceTalle && costTalle > 0 && (
-                  <p className="text-caption text-secondary font-bold mt-xs">
-                    Ganancia: ${(salePriceTalle - costTalle).toLocaleString('es-AR', { minimumFractionDigits: 2 })} sobre costo de ${costTalle.toLocaleString('es-AR', { minimumFractionDigits: 2 })}
-                  </p>
-                )}
               </div>
 
               <div className="col-span-1 md:col-span-2 pt-base">
                 <div className="border-l-4 border-primary pl-base mb-base flex items-center justify-between">
-                  <h3 className="text-label-md font-bold text-primary uppercase tracking-wider">Talles y Stock</h3>
+                  <h3 className="text-label-md font-bold text-primary uppercase tracking-wider">Talles</h3>
                   {totalStockTalle > 0 && (
                     <span className="text-caption text-on-surface-variant font-bold">Stock total: {totalStockTalle}</span>
                   )}
                 </div>
+                <p className="text-caption text-on-surface-variant mb-base">
+                  El costo y la ganancia de cada talle son opcionales. Si un talle sale más caro o más barato que el resto, cargalos ahí. Si los dejás vacíos, se usa el costo/ganancia general de arriba.
+                </p>
               </div>
 
               <div className="col-span-1 md:col-span-2 space-y-sm">
-                {talleForm.sizes.map(row => (
-                  <div key={row.id} className="flex items-center gap-sm bg-surface-container/30 p-sm rounded-lg border border-outline-variant/10">
-                    <div className="flex-1">
-                      <label className="block text-caption text-on-surface-variant mb-xs">Talle</label>
-                      <input
-                        className={inputCls}
-                        placeholder="S, M, L, 38, 40..."
-                        type="text"
-                        value={row.talle}
-                        onChange={e => updateSizeRow(row.id, 'talle', e.target.value)}
-                      />
+                {talleForm.sizes.map(row => {
+                  const suggestion = suggestedPrice(row, talleForm.purchasePrice, talleForm.profitPercent);
+                  const showSuggestion = suggestion !== null && row.price !== suggestion.toFixed(2);
+                  return (
+                    <div key={row.id} className="bg-surface-container/30 p-sm rounded-lg border border-outline-variant/10 space-y-xs">
+                      <div className="flex items-end gap-sm">
+                        <div className="w-20">
+                          <label className="block text-caption text-on-surface-variant mb-xs">Talle</label>
+                          <input
+                            className={inputCls}
+                            placeholder="S, M, L..."
+                            type="text"
+                            value={row.talle}
+                            onChange={e => updateSizeRow(row.id, 'talle', e.target.value)}
+                          />
+                        </div>
+                        <div className="w-20">
+                          <label className="block text-caption text-on-surface-variant mb-xs">Stock</label>
+                          <input
+                            className={inputCls}
+                            placeholder="0"
+                            type="number"
+                            min="0"
+                            value={row.stock}
+                            onChange={e => updateSizeRow(row.id, 'stock', e.target.value)}
+                          />
+                        </div>
+                        <div className="flex-1">
+                          <label className="block text-caption text-on-surface-variant mb-xs">Costo (opcional)</label>
+                          <div className="relative">
+                            <span className="absolute left-2 top-1/2 -translate-y-1/2 text-on-surface-variant font-bold text-caption">$</span>
+                            <input
+                              className={inputCls + ' pl-6'}
+                              placeholder="Usar general"
+                              type="number"
+                              min="0"
+                              step="0.01"
+                              value={row.costo}
+                              onChange={e => updateSizeRow(row.id, 'costo', e.target.value)}
+                            />
+                          </div>
+                        </div>
+                        <div className="flex-1">
+                          <label className="block text-caption text-on-surface-variant mb-xs">Ganancia % (opcional)</label>
+                          <div className="relative">
+                            <input
+                              className={inputCls + ' pr-6'}
+                              placeholder="Usar general"
+                              type="number"
+                              min="0"
+                              step="0.5"
+                              value={row.gananciaPercent}
+                              onChange={e => updateSizeRow(row.id, 'gananciaPercent', e.target.value)}
+                            />
+                            <span className="absolute right-2 top-1/2 -translate-y-1/2 text-on-surface-variant font-bold text-caption">%</span>
+                          </div>
+                        </div>
+                        <div className="flex-1">
+                          <label className="block text-caption text-on-surface-variant mb-xs">Precio final</label>
+                          <div className="relative">
+                            <span className="absolute left-2 top-1/2 -translate-y-1/2 text-on-surface-variant font-bold text-caption">$</span>
+                            <input
+                              className={inputCls + ' pl-6 font-bold'}
+                              placeholder="0.00"
+                              type="number"
+                              min="0"
+                              step="0.01"
+                              value={row.price}
+                              onChange={e => updateSizeRow(row.id, 'price', e.target.value)}
+                            />
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => removeSizeRow(row.id)}
+                          disabled={talleForm.sizes.length === 1}
+                          className="w-9 h-9 flex-shrink-0 rounded-lg border border-error/30 text-error flex items-center justify-center hover:bg-error-container/20 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+                        >
+                          <span className="material-symbols-outlined" style={{ fontSize: '18px' }}>close</span>
+                        </button>
+                      </div>
+                      {showSuggestion && (
+                        <button
+                          type="button"
+                          onClick={() => applySuggestion(row.id, suggestion!)}
+                          className="text-caption text-secondary font-bold hover:underline"
+                        >
+                          Sugerido: ${suggestion!.toLocaleString('es-AR', { minimumFractionDigits: 2 })} (click para usar)
+                        </button>
+                      )}
                     </div>
-                    <div className="flex-1">
-                      <label className="block text-caption text-on-surface-variant mb-xs">Stock</label>
-                      <input
-                        className={inputCls}
-                        placeholder="0"
-                        type="number"
-                        min="0"
-                        value={row.stock}
-                        onChange={e => updateSizeRow(row.id, 'stock', e.target.value)}
-                      />
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => removeSizeRow(row.id)}
-                      disabled={talleForm.sizes.length === 1}
-                      className="mt-lg w-9 h-9 flex-shrink-0 rounded-lg border border-error/30 text-error flex items-center justify-center hover:bg-error-container/20 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
-                    >
-                      <span className="material-symbols-outlined" style={{ fontSize: '18px' }}>close</span>
-                    </button>
-                  </div>
-                ))}
+                  );
+                })}
 
                 <button
                   type="button"
