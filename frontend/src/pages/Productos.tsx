@@ -20,6 +20,9 @@ interface Product {
   price_per_kg?: number;
   currentKgStock?: number;
   initialKgStock?: number;
+  bagKg?: number | null;
+  closedBagPrice?: number | null;
+  batchCount?: number;
 }
 
 interface SizeRow {
@@ -29,6 +32,12 @@ interface SizeRow {
   costo: string;
   gananciaPercent: string;
   price: string;
+}
+
+interface Batch {
+  id: number;
+  initialKg: number;
+  remainingKg: number;
 }
 
 const ICON_OPTIONS = [
@@ -77,6 +86,12 @@ export default function Productos({ onNavigate }: ProductosProps) {
   const [variantRows, setVariantRows] = useState<SizeRow[]>([]);
   const [loadingVariants, setLoadingVariants] = useState(false);
 
+  const [batches, setBatches] = useState<Batch[]>([]);
+  const [loadingBatches, setLoadingBatches] = useState(false);
+  const [newBagKg, setNewBagKg] = useState('');
+  const [newBagQty, setNewBagQty] = useState('1');
+  const [addingBatch, setAddingBatch] = useState(false);
+
 
 const getIconForCategory = (category: string, isBulk: boolean) => {
   if (isBulk) return 'scale';
@@ -112,6 +127,9 @@ const getIconForCategory = (category: string, isBulk: boolean) => {
           pricePerKg: p.pricePerKg,
           currentKgStock: p.currentKgStock,
           initialKgStock: p.initialKgStock,
+          bagKg: p.bagKg,
+          closedBagPrice: p.closedBagPrice,
+          batchCount: p.batchCount,
         })));
       }
     } catch (error) {
@@ -136,9 +154,26 @@ const getIconForCategory = (category: string, isBulk: boolean) => {
     return matchSearch && matchCat && matchStock;
   });
 
+  const loadBatches = async (productId: number) => {
+    setLoadingBatches(true);
+    try {
+      const data = await apiIntegrado.getProductBatches(token, productId);
+      setBatches((data || []).map((b: any) => ({
+        id: b.id,
+        initialKg: Number(b.initialKg),
+        remainingKg: Number(b.remainingKg),
+      })));
+    } finally {
+      setLoadingBatches(false);
+    }
+  };
+
   const openEdit = async (p: Product) => {
     setEditProduct(p);
     setErrorMsg('');
+    setBatches([]);
+    setNewBagKg(p.bagKg ? String(p.bagKg) : '');
+    setNewBagQty('1');
     if (p.hasSizes) {
       setLoadingVariants(true);
       try {
@@ -157,6 +192,9 @@ const getIconForCategory = (category: string, isBulk: boolean) => {
     } else {
       setVariantRows([]);
     }
+    if (p.isBulk) {
+      await loadBatches(p.id);
+    }
   };
 
   const addVariantRow = () => setVariantRows(prev => [...prev, { id: crypto.randomUUID(), talle: '', stock: '', costo: '', gananciaPercent: '', price: '' }]);
@@ -165,6 +203,46 @@ const getIconForCategory = (category: string, isBulk: boolean) => {
     setVariantRows(prev => prev.map(r => r.id === id ? { ...r, [field]: value } : r));
   const applySuggestion = (id: string, value: number) =>
     setVariantRows(prev => prev.map(r => r.id === id ? { ...r, price: value.toFixed(2) } : r));
+
+  const handleAddBatches = async () => {
+    if (!editProduct) return;
+    const kg = parseFloat(newBagKg);
+    const qty = parseInt(newBagQty) || 1;
+    if (!kg || kg <= 0) {
+      setErrorMsg('Ingresá los kilos por bolsa antes de agregar.');
+      return;
+    }
+    setAddingBatch(true);
+    setErrorMsg('');
+    const result = await apiIntegrado.addProductBatches(token, editProduct.id, kg, qty);
+    setAddingBatch(false);
+    if (result) {
+      await loadBatches(editProduct.id);
+      await loadProducts();
+      setNewBagQty('1');
+    } else {
+      setErrorMsg('Error al agregar bolsas.');
+    }
+  };
+
+  const handleUpdateBatch = async (batchId: number, remainingKg: number) => {
+    if (!editProduct) return;
+    const result = await apiIntegrado.updateProductBatch(token, editProduct.id, batchId, remainingKg);
+    if (result) {
+      await loadBatches(editProduct.id);
+      await loadProducts();
+    }
+  };
+
+  const handleDeleteBatch = async (batchId: number) => {
+    if (!editProduct) return;
+    if (!confirm('¿Eliminar esta bolsa del stock?')) return;
+    const result = await apiIntegrado.deleteProductBatch(token, editProduct.id, batchId);
+    if (result) {
+      await loadBatches(editProduct.id);
+      await loadProducts();
+    }
+  };
 
   const handleSaveEdit = async () => {
     if (!editProduct) return;
@@ -188,6 +266,8 @@ const getIconForCategory = (category: string, isBulk: boolean) => {
       isBulk: editProduct.isBulk || false,
       pricePerKg: editProduct.isBulk ? (editProduct.pricePerKg ?? 0) : null,
       currentKgStock: editProduct.isBulk ? (editProduct.currentKgStock ?? 0) : null,
+      bagKg: editProduct.isBulk ? (editProduct.bagKg ?? null) : null,
+      closedBagPrice: editProduct.isBulk ? (editProduct.closedBagPrice ?? null) : null,
       alertThreshold: 2,
     };
 
@@ -215,6 +295,7 @@ const getIconForCategory = (category: string, isBulk: boolean) => {
       await loadProducts();
       setEditProduct(null);
       setVariantRows([]);
+      setBatches([]);
     } else {
       setErrorMsg('Error al guardar los cambios. Intenta de nuevo.');
     }
@@ -346,9 +427,13 @@ const getIconForCategory = (category: string, isBulk: boolean) => {
                             <span className={`text-body-md ${isLow ? 'text-error font-bold' : ''}`}>
                               {Number(p.currentKgStock).toFixed(2)} kg
                             </span>
-                            <span className="text-caption text-on-surface-variant block">
-                              de {Number(p.initialKgStock ?? 0).toFixed(2)} kg
-                            </span>
+                            {(p.batchCount ?? 0) > 0 ? (
+                              <span className="text-caption text-on-surface-variant block">{p.batchCount} bolsa(s)</span>
+                            ) : (
+                              <span className="text-caption text-on-surface-variant block">
+                                de {Number(p.initialKgStock ?? 0).toFixed(2)} kg
+                              </span>
+                            )}
                           </div>
                         ) : (
                           <>
@@ -482,18 +567,121 @@ const getIconForCategory = (category: string, isBulk: boolean) => {
               {/* Stock diferenciado por tipo */}
               {editProduct.isBulk ? (
                 <div className="space-y-base bg-tertiary/5 p-md rounded-xl border border-tertiary/20">
-                  <h3 className="text-label-md font-bold text-tertiary uppercase tracking-wider">Stock de Bolsa</h3>
-                  <div className="space-y-base">
-                    <label className="block text-label-md font-bold text-primary">Kilos disponibles actualmente</label>
-                    <div className="relative">
-                      <span className="material-symbols-outlined absolute left-base top-1/2 -translate-y-1/2 text-outline-variant" style={{ fontSize: '20px' }}>scale</span>
-                      <input className={inputCls + ' pl-10'} type="number" min={0} step={0.001}
-                        value={editProduct.currentKgStock ?? ''}
-                        onChange={e => setEditProduct({ ...editProduct, currentKgStock: parseFloat(e.target.value) || 0 })} />
+                  <h3 className="text-label-md font-bold text-tertiary uppercase tracking-wider">Bolsas y Stock</h3>
+
+                  {batches.length === 0 && !loadingBatches ? (
+                    <div className="space-y-base">
+                      <label className="block text-label-md font-bold text-primary">Kilos disponibles actualmente (sueltos)</label>
+                      <div className="relative">
+                        <span className="material-symbols-outlined absolute left-base top-1/2 -translate-y-1/2 text-outline-variant" style={{ fontSize: '20px' }}>scale</span>
+                        <input className={inputCls + ' pl-10'} type="number" min={0} step={0.001}
+                          value={editProduct.currentKgStock ?? ''}
+                          onChange={e => setEditProduct({ ...editProduct, currentKgStock: parseFloat(e.target.value) || 0 })} />
+                      </div>
+                      <p className="text-caption text-on-surface-variant">
+                        Este producto todavía no usa bolsas individuales. Agregá una abajo para empezar a trackearlo por bolsa.
+                      </p>
                     </div>
-                    <p className="text-caption text-on-surface-variant">
-                      Stock original de la bolsa: {Number(editProduct.initialKgStock ?? 0).toFixed(2)} kg
-                    </p>
+                  ) : loadingBatches ? (
+                    <p className="text-caption text-on-surface-variant">Cargando bolsas...</p>
+                  ) : (
+                    <div className="space-y-xs">
+                      {batches.map(b => {
+                        const isClosed = b.remainingKg === b.initialKg;
+                        return (
+                          <div key={b.id} className="flex items-center gap-sm bg-white p-sm rounded-lg border border-tertiary/20">
+                            <span className={`px-sm py-xs text-caption font-bold rounded-full flex-shrink-0 ${
+                              isClosed ? 'bg-primary/10 text-primary' : 'bg-tertiary/10 text-tertiary'
+                            }`}>
+                              {isClosed ? 'Cerrada' : 'Abierta'}
+                            </span>
+                            <input
+                              className={inputCls + ' flex-1'}
+                              type="number"
+                              min={0}
+                              step={0.001}
+                              value={b.remainingKg}
+                              onChange={e => setBatches(prev => prev.map(x => x.id === b.id ? { ...x, remainingKg: parseFloat(e.target.value) || 0 } : x))}
+                            />
+                            <span className="text-caption text-on-surface-variant flex-shrink-0">/ {b.initialKg.toFixed(2)} kg</span>
+                            <button
+                              type="button"
+                              onClick={() => handleUpdateBatch(b.id, b.remainingKg)}
+                              className="w-9 h-9 flex-shrink-0 rounded-lg border border-primary/30 text-primary flex items-center justify-center hover:bg-primary/10 transition-all"
+                              title="Guardar"
+                            >
+                              <span className="material-symbols-outlined" style={{ fontSize: '18px' }}>check</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteBatch(b.id)}
+                              className="w-9 h-9 flex-shrink-0 rounded-lg border border-error/30 text-error flex items-center justify-center hover:bg-error-container/20 transition-all"
+                              title="Eliminar bolsa"
+                            >
+                              <span className="material-symbols-outlined" style={{ fontSize: '18px' }}>close</span>
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                  <div className="pt-base border-t border-tertiary/10 space-y-base">
+                    <label className="block text-label-md font-bold text-primary">Agregar bolsas (reponer stock)</label>
+                    <div className="flex gap-sm items-end">
+                      <div className="flex-1">
+                        <label className="block text-caption text-on-surface-variant mb-xs">Kilos por bolsa</label>
+                        <input
+                          className={inputCls}
+                          type="number"
+                          min={0}
+                          step={0.01}
+                          placeholder="0.00"
+                          value={newBagKg}
+                          onChange={e => setNewBagKg(e.target.value)}
+                        />
+                      </div>
+                      <div className="w-24">
+                        <label className="block text-caption text-on-surface-variant mb-xs">Cantidad</label>
+                        <input
+                          className={inputCls}
+                          type="number"
+                          min={1}
+                          value={newBagQty}
+                          onChange={e => setNewBagQty(e.target.value)}
+                        />
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleAddBatches}
+                        disabled={addingBatch}
+                        className="px-md py-base bg-tertiary text-white rounded-lg font-bold flex items-center justify-center gap-xs hover:opacity-90 transition-all active:scale-95 disabled:opacity-40"
+                      >
+                        <span className="material-symbols-outlined">add</span>
+                        {addingBatch ? 'Agregando...' : 'Agregar'}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-gutter pt-base border-t border-tertiary/10">
+                    <div className="space-y-base">
+                      <label className="block text-label-md font-bold text-primary">Kilos por Bolsa (default)</label>
+                      <div className="relative">
+                        <span className="material-symbols-outlined absolute left-base top-1/2 -translate-y-1/2 text-outline-variant" style={{ fontSize: '20px' }}>inventory_2</span>
+                        <input className={inputCls + ' pl-10'} type="number" min={0} step={0.01}
+                          value={editProduct.bagKg ?? ''}
+                          onChange={e => setEditProduct({ ...editProduct, bagKg: parseFloat(e.target.value) || null })} />
+                      </div>
+                    </div>
+                    <div className="space-y-base">
+                      <label className="block text-label-md font-bold text-primary">Precio Bolsa Cerrada</label>
+                      <div className="relative">
+                        <span className="material-symbols-outlined absolute left-base top-1/2 -translate-y-1/2 text-outline-variant" style={{ fontSize: '20px' }}>attach_money</span>
+                        <input className={inputCls + ' pl-10'} type="number" min={0} step={0.01}
+                          value={editProduct.closedBagPrice ?? ''}
+                          onChange={e => setEditProduct({ ...editProduct, closedBagPrice: parseFloat(e.target.value) || null })} />
+                      </div>
+                    </div>
                   </div>
                 </div>
               ) : editProduct.hasSizes ? (
@@ -634,7 +822,7 @@ const getIconForCategory = (category: string, isBulk: boolean) => {
               {/* Precio diferenciado por tipo (no aplica a productos por talle: se edita arriba, por talle) */}
               {editProduct.isBulk ? (
                 <div className="space-y-base">
-                  <label className="block text-label-md font-bold text-primary">Precio por Kilo</label>
+                  <label className="block text-label-md font-bold text-primary">Precio por Kilo (venta suelta)</label>
                   <div className="relative">
                     <span className="material-symbols-outlined absolute left-base top-1/2 -translate-y-1/2 text-outline-variant" style={{ fontSize: '20px' }}>attach_money</span>
                     <input className={inputCls + ' pl-10'} type="number" min={0} step={0.01}

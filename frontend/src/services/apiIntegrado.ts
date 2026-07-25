@@ -85,6 +85,73 @@ export const apiIntegrado = {
     }
   },
 
+  getProductBatches: async (token: string | null, productId: number) => {
+  if (!token) return [];
+  try {
+    const response = await fetch(`${API_URL}/products/${productId}/batches`, {
+      headers: { 'Authorization': `Bearer ${token}` }
+    });
+    if (!response.ok) return [];
+    return response.json();
+  } catch (error) {
+    console.warn('Error al obtener bolsas', error);
+    return [];
+  }
+},
+
+addProductBatches: async (token: string | null, productId: number, initialKg: number, quantity: number) => {
+  if (!token) return null;
+  try {
+    const response = await fetch(`${API_URL}/products/${productId}/batches`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      },
+      body: JSON.stringify({ initialKg, quantity })
+    });
+    if (!response.ok) return null;
+    return response.json();
+  } catch (error) {
+    console.warn('Error al agregar bolsas', error);
+    return null;
+  }
+},
+
+updateProductBatch: async (token: string | null, productId: number, batchId: number, remainingKg: number) => {
+  if (!token) return null;
+  try {
+    const response = await fetch(`${API_URL}/products/${productId}/batches/${batchId}`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      },
+      body: JSON.stringify({ remainingKg })
+    });
+    if (!response.ok) return null;
+    return response.json();
+  } catch (error) {
+    console.warn('Error al actualizar la bolsa', error);
+    return null;
+  }
+},
+
+deleteProductBatch: async (token: string | null, productId: number, batchId: number) => {
+  if (!token) return null;
+  try {
+    const response = await fetch(`${API_URL}/products/${productId}/batches/${batchId}`, {
+      method: 'DELETE',
+      headers: { 'Authorization': `Bearer ${token}` }
+    });
+    if (!response.ok) return null;
+    return response.json();
+  } catch (error) {
+    console.warn('Error al eliminar la bolsa', error);
+    return null;
+  }
+},
+
   updateProductVariants: async (token: string | null, productId: number, sizes: { talle: string; stock: number }[]) => {
     if (!token) return null;
     try {

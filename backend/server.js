@@ -315,14 +315,19 @@ app.get('/api/products', verifyToken, async (req, res) => {
     let query = `
       SELECT p.id, p.name, p.sku, c.name as category, 
              COALESCE(v.total_stock, p.stock) as stock, 
-             p.max_stock as maxStock, p.price, p.icon,
+             p.max_stock as maxStock, 
+             COALESCE(v.min_variant_price, p.price) as price, 
+             p.icon,
              p.is_bulk as isBulk, p.has_sizes as hasSizes,
              p.price_per_kg as pricePerKg, 
-             p.current_kg_stock as currentKgStock, 
+             COALESCE(b.batch_kg_stock, p.current_kg_stock) as currentKgStock, 
              p.initial_kg_stock as initialKgStock,
+             p.bag_kg as bagKg,
+             p.closed_bag_price as closedBagPrice,
+             COALESCE(b.batch_count, 0) as batchCount,
              p.alert_threshold as alertThreshold,
              CASE 
-               WHEN p.is_bulk = true AND p.current_kg_stock <= p.alert_threshold THEN 'low'
+               WHEN p.is_bulk = true AND COALESCE(b.batch_kg_stock, p.current_kg_stock) <= p.alert_threshold THEN 'low'
                WHEN p.has_sizes = true AND COALESCE(v.total_stock, 0) <= p.alert_threshold THEN 'low'
                WHEN p.is_bulk = false AND p.has_sizes = false AND p.stock <= p.alert_threshold THEN 'low'
                ELSE 'normal'
@@ -330,10 +335,15 @@ app.get('/api/products', verifyToken, async (req, res) => {
       FROM products p
       JOIN categories c ON p.category_id = c.id
       LEFT JOIN (
-        SELECT product_id, SUM(stock) as total_stock 
+        SELECT product_id, SUM(stock) as total_stock, MIN(price) as min_variant_price
         FROM product_variants 
         GROUP BY product_id
       ) v ON v.product_id = p.id
+      LEFT JOIN (
+        SELECT product_id, SUM(remaining_kg) as batch_kg_stock, COUNT(*) as batch_count
+        FROM product_stock_batches
+        GROUP BY product_id
+      ) b ON b.product_id = p.id
       WHERE 1=1
     `;
     
@@ -357,7 +367,7 @@ app.get('/api/products', verifyToken, async (req, res) => {
     }
     if (stockStatus === 'low') {
       query += ` AND (
-        (p.is_bulk = true AND p.current_kg_stock <= p.alert_threshold) OR
+        (p.is_bulk = true AND COALESCE(b.batch_kg_stock, p.current_kg_stock) <= p.alert_threshold) OR
         (p.has_sizes = true AND COALESCE(v.total_stock, 0) <= p.alert_threshold) OR
         (p.is_bulk = false AND p.has_sizes = false AND p.stock <= p.alert_threshold)
       )`;
@@ -380,6 +390,33 @@ app.get('/api/products', verifyToken, async (req, res) => {
     res.status(500).json({ error: 'Error al obtener productos' });
   }
 });
+app.get('/api/products/:id', verifyToken, async (req, res) => {
+  try {
+    const connection = await pool.getConnection();
+    const [products] = await connection.query(`
+      SELECT p.id, p.name, p.sku, c.name as category, 
+             p.stock, p.max_stock as maxStock, p.price, p.icon,
+             p.is_bulk as isBulk, p.has_sizes as hasSizes, p.price_per_kg as pricePerKg, 
+             p.initial_kg_stock as initialKgStock,
+             p.current_kg_stock as currentKgStock,
+             p.bag_kg as bagKg,
+             p.closed_bag_price as closedBagPrice,
+             p.alert_threshold as alertThreshold
+      FROM products p
+      JOIN categories c ON p.category_id = c.id
+      WHERE p.id = ?
+    `, [req.params.id]);
+    connection.release();
+    
+    if (products.length === 0) {
+      return res.status(404).json({ error: 'Producto no encontrado' });
+    }
+    res.json(products[0]);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Error al obtener producto' });
+  }
+});
 
 app.get('/api/products/:id/variants', verifyToken, async (req, res) => {
   try {
@@ -395,6 +432,8 @@ app.get('/api/products/:id/variants', verifyToken, async (req, res) => {
     res.status(500).json({ error: 'Error al obtener talles' });
   }
 });
+
+
 app.put('/api/products/:id/variants', verifyToken, async (req, res) => {
   try {
     const { sizes } = req.body;
@@ -440,85 +479,10 @@ app.put('/api/products/:id/variants', verifyToken, async (req, res) => {
   }
 });
 
-app.get('/api/products', verifyToken, async (req, res) => {
-  try {
-    const { q, category, minPrice, maxPrice, stockStatus, isBulk } = req.query;
-    
-    let query = `
-      SELECT p.id, p.name, p.sku, c.name as category, 
-             COALESCE(v.total_stock, p.stock) as stock, 
-             p.max_stock as maxStock, 
-             COALESCE(v.min_variant_price, p.price) as price, 
-             p.icon,
-             p.is_bulk as isBulk, p.has_sizes as hasSizes,
-             p.price_per_kg as pricePerKg, 
-             p.current_kg_stock as currentKgStock, 
-             p.initial_kg_stock as initialKgStock,
-             p.alert_threshold as alertThreshold,
-             CASE 
-               WHEN p.is_bulk = true AND p.current_kg_stock <= p.alert_threshold THEN 'low'
-               WHEN p.has_sizes = true AND COALESCE(v.total_stock, 0) <= p.alert_threshold THEN 'low'
-               WHEN p.is_bulk = false AND p.has_sizes = false AND p.stock <= p.alert_threshold THEN 'low'
-               ELSE 'normal'
-             END as stockStatus
-      FROM products p
-      JOIN categories c ON p.category_id = c.id
-      LEFT JOIN (
-        SELECT product_id, SUM(stock) as total_stock, MIN(price) as min_variant_price
-        FROM product_variants 
-        GROUP BY product_id
-      ) v ON v.product_id = p.id
-      WHERE 1=1
-    `;
-    
-    const params = [];
-
-    if (q) {
-      query += ` AND (p.name LIKE ? OR p.sku LIKE ?)`;
-      params.push(`%${q}%`, `%${q}%`);
-    }
-    if (category) {
-      query += ` AND c.name = ?`;
-      params.push(category);
-    }
-    if (minPrice) {
-      query += ` AND p.price >= ?`;
-      params.push(parseFloat(minPrice));
-    }
-    if (maxPrice) {
-      query += ` AND p.price <= ?`;
-      params.push(parseFloat(maxPrice));
-    }
-    if (stockStatus === 'low') {
-      query += ` AND (
-        (p.is_bulk = true AND p.current_kg_stock <= p.alert_threshold) OR
-        (p.has_sizes = true AND COALESCE(v.total_stock, 0) <= p.alert_threshold) OR
-        (p.is_bulk = false AND p.has_sizes = false AND p.stock <= p.alert_threshold)
-      )`;
-    }
-    if (isBulk === 'true') {
-      query += ` AND p.is_bulk = true`;
-    } else if (isBulk === 'false') {
-      query += ` AND p.is_bulk = false`;
-    }
-
-    query += ` ORDER BY p.name`;
-
-    const connection = await pool.getConnection();
-    const [products] = await connection.query(query, params);
-    connection.release();
-    
-    res.json(products);
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ error: 'Error al obtener productos' });
-  }
-});
 
 app.put('/api/products/:id', verifyToken, async (req, res) => {
   try {
-    const { name, sku, category, stock, maxStock, price, icon, isBulk, pricePerKg, currentKgStock, alertThreshold } = req.body;
-    
+const { name, sku, category, stock, maxStock, price, icon, isBulk, pricePerKg, initialKgStock, alertThreshold, hasSizes, sizes, bagKg, closedBagPrice, bags } = req.body;    
     const connection = await pool.getConnection();
     const [categories] = await connection.query('SELECT id FROM categories WHERE name = ?', [category]);
     if (categories.length === 0) {
@@ -528,9 +492,11 @@ app.put('/api/products/:id', verifyToken, async (req, res) => {
 
     await connection.query(
       `UPDATE products SET name = ?, sku = ?, category_id = ?, stock = ?, max_stock = ?, 
-                         price = ?, icon = ?, is_bulk = ?, price_per_kg = ?, current_kg_stock = ?, alert_threshold = ? 
+                         price = ?, icon = ?, is_bulk = ?, price_per_kg = ?, current_kg_stock = ?, 
+                         bag_kg = ?, closed_bag_price = ?, alert_threshold = ? 
        WHERE id = ?`,
-      [name, sku, categories[0].id, stock, maxStock, price, icon, isBulk, pricePerKg, currentKgStock, alertThreshold, req.params.id]
+      [name, sku, categories[0].id, stock, maxStock, price, icon, isBulk, pricePerKg, currentKgStock, 
+       bagKg || null, closedBagPrice || null, alertThreshold, req.params.id]
     );
     connection.release();
 
@@ -543,8 +509,7 @@ app.put('/api/products/:id', verifyToken, async (req, res) => {
 
 app.post('/api/products', verifyToken, async (req, res) => {
   try {
-    const { name, sku, category, stock, maxStock, price, icon, isBulk, pricePerKg, initialKgStock, alertThreshold, hasSizes, sizes } = req.body;
-    
+const { name, sku, category, stock, maxStock, price, icon, isBulk, pricePerKg, initialKgStock, alertThreshold, hasSizes, sizes, bagKg, closedBagPrice, bagQty } = req.body;
     if (!name || !sku || !category || (price === undefined || price === null)) {
       return res.status(400).json({ error: 'Campos requeridos: name, sku, category, price' });
     }
@@ -562,10 +527,12 @@ app.post('/api/products', verifyToken, async (req, res) => {
 
       const [result] = await connection.query(
         `INSERT INTO products (name, sku, category_id, stock, max_stock, price, icon, 
-                             is_bulk, has_sizes, price_per_kg, initial_kg_stock, current_kg_stock, alert_threshold) 
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                             is_bulk, has_sizes, price_per_kg, initial_kg_stock, current_kg_stock, 
+                             bag_kg, closed_bag_price, alert_threshold) 
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [name, sku, categories[0].id, hasSizes ? 0 : (stock || 0), maxStock || 50, price, icon || 'nutrition', 
-         isBulk || false, hasSizes || false, pricePerKg || null, initialKgStock || 0, initialKgStock || 0, alertThreshold || 2]
+         isBulk || false, hasSizes || false, pricePerKg || null, initialKgStock || 0, initialKgStock || 0, 
+         bagKg || null, closedBagPrice || null, alertThreshold || 2]
       );
 
       const productId = result.insertId;
@@ -588,6 +555,17 @@ app.post('/api/products', verifyToken, async (req, res) => {
         }
       }
 
+    if (isBulk && bagKg && Array.isArray(bags) && bags.length > 0) {
+        for (const bag of bags) {
+          const remaining = bag.remainingKg !== undefined && bag.remainingKg !== null
+            ? parseFloat(bag.remainingKg)
+            : bagKg;
+          await connection.query(
+            'INSERT INTO product_stock_batches (product_id, initial_kg, remaining_kg) VALUES (?, ?, ?)',
+            [productId, bagKg, Math.max(0, Math.min(remaining, bagKg))]
+          );
+        }
+      }
       await connection.commit();
       res.status(201).json({ id: productId, message: 'Producto creado' });
 
@@ -616,6 +594,81 @@ app.delete('/api/products/:id', verifyToken, async (req, res) => {
   } catch (error) {
     console.error(error);
     res.status(500).json({ error: 'Error al eliminar producto' });
+  }
+});
+
+app.get('/api/products/:id/batches', verifyToken, async (req, res) => {
+  try {
+    const connection = await pool.getConnection();
+    const [batches] = await connection.query(
+      'SELECT id, initial_kg as initialKg, remaining_kg as remainingKg FROM product_stock_batches WHERE product_id = ? ORDER BY id ASC',
+      [req.params.id]
+    );
+    connection.release();
+    res.json(batches);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Error al obtener las bolsas' });
+  }
+});
+
+app.post('/api/products/:id/batches', verifyToken, async (req, res) => {
+  try {
+    const { initialKg, quantity } = req.body;
+    const kg = parseFloat(initialKg);
+    const qty = parseInt(quantity) || 1;
+
+    if (!kg || kg <= 0) {
+      return res.status(400).json({ error: 'initialKg debe ser mayor a 0' });
+    }
+
+    const connection = await pool.getConnection();
+    for (let i = 0; i < qty; i++) {
+      await connection.query(
+        'INSERT INTO product_stock_batches (product_id, initial_kg, remaining_kg) VALUES (?, ?, ?)',
+        [req.params.id, kg, kg]
+      );
+    }
+    connection.release();
+
+    res.status(201).json({ message: `${qty} bolsa(s) agregada(s)` });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Error al agregar bolsas' });
+  }
+});
+
+app.put('/api/products/:id/batches/:batchId', verifyToken, async (req, res) => {
+  try {
+    const { remainingKg } = req.body;
+    if (remainingKg === undefined || remainingKg === null || isNaN(parseFloat(remainingKg))) {
+      return res.status(400).json({ error: 'remainingKg requerido' });
+    }
+    const connection = await pool.getConnection();
+    await connection.query(
+      'UPDATE product_stock_batches SET remaining_kg = ? WHERE id = ? AND product_id = ?',
+      [Math.max(0, parseFloat(remainingKg)), req.params.batchId, req.params.id]
+    );
+    connection.release();
+    res.json({ message: 'Bolsa actualizada' });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Error al actualizar la bolsa' });
+  }
+});
+
+app.delete('/api/products/:id/batches/:batchId', verifyToken, async (req, res) => {
+  try {
+    const connection = await pool.getConnection();
+    await connection.query(
+      'DELETE FROM product_stock_batches WHERE id = ? AND product_id = ?',
+      [req.params.batchId, req.params.id]
+    );
+    connection.release();
+    res.json({ message: 'Bolsa eliminada' });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: 'Error al eliminar la bolsa' });
   }
 });
 
@@ -734,7 +787,7 @@ app.post('/api/sales', verifyToken, async (req, res) => {
       );
       const saleId = saleResult.insertId;
 
-     for (const item of items) {
+      for (const item of items) {
         const [products] = await connection.query(
           'SELECT is_bulk, has_sizes, stock, current_kg_stock, alert_threshold FROM products WHERE id = ?',
           [item.productId]
@@ -773,13 +826,62 @@ app.post('/api/sales', verifyToken, async (req, res) => {
             await createStockAlert(connection, item.productId, 'low_stock', newStock, product.alert_threshold);
           }
         } else if (product.is_bulk) {
-          const newKgStock = parseFloat(product.current_kg_stock) - parseFloat(item.kgQuantity || 0);
-          await connection.query(
-            'UPDATE products SET current_kg_stock = ? WHERE id = ?',
-            [Math.max(0, newKgStock), item.productId]
+          const [batchCountRows] = await connection.query(
+            'SELECT COUNT(*) as cnt FROM product_stock_batches WHERE product_id = ?',
+            [item.productId]
           );
-          if (newKgStock <= product.alert_threshold) {
-            await createStockAlert(connection, item.productId, 'low_kg_stock', newKgStock, product.alert_threshold);
+          const hasBatches = batchCountRows[0].cnt > 0;
+
+          if (hasBatches) {
+            if (item.saleType === 'bag') {
+              const bagsNeeded = parseInt(item.bagQty) || 0;
+              const [closedBatches] = await connection.query(
+                'SELECT id, initial_kg FROM product_stock_batches WHERE product_id = ? AND remaining_kg = initial_kg ORDER BY id ASC LIMIT ? FOR UPDATE',
+                [item.productId, bagsNeeded]
+              );
+              if (closedBatches.length < bagsNeeded) {
+                throw new Error(`No hay suficientes bolsas cerradas disponibles para el producto ${item.productId}`);
+              }
+              for (const b of closedBatches) {
+                await connection.query('UPDATE product_stock_batches SET remaining_kg = 0 WHERE id = ?', [b.id]);
+              }
+            } else {
+              let kgNeeded = parseFloat(item.kgQuantity || 0);
+              const [batches] = await connection.query(
+                `SELECT id, initial_kg, remaining_kg FROM product_stock_batches 
+                 WHERE product_id = ? AND remaining_kg > 0 
+                 ORDER BY (remaining_kg < initial_kg) DESC, remaining_kg ASC 
+                 FOR UPDATE`,
+                [item.productId]
+              );
+              for (const b of batches) {
+                if (kgNeeded <= 0) break;
+                const avail = parseFloat(b.remaining_kg);
+                const take = Math.min(avail, kgNeeded);
+                await connection.query('UPDATE product_stock_batches SET remaining_kg = ? WHERE id = ?', [avail - take, b.id]);
+                kgNeeded -= take;
+              }
+              if (kgNeeded > 0.0001) {
+                throw new Error(`Stock insuficiente para el producto ${item.productId}`);
+              }
+            }
+
+            const [[{ total: remainingTotal }]] = await connection.query(
+              'SELECT COALESCE(SUM(remaining_kg),0) as total FROM product_stock_batches WHERE product_id = ?',
+              [item.productId]
+            );
+            if (remainingTotal <= product.alert_threshold) {
+              await createStockAlert(connection, item.productId, 'low_kg_stock', remainingTotal, product.alert_threshold);
+            }
+          } else {
+            const newKgStock = parseFloat(product.current_kg_stock) - parseFloat(item.kgQuantity || 0);
+            await connection.query(
+              'UPDATE products SET current_kg_stock = ? WHERE id = ?',
+              [Math.max(0, newKgStock), item.productId]
+            );
+            if (newKgStock <= product.alert_threshold) {
+              await createStockAlert(connection, item.productId, 'low_kg_stock', newKgStock, product.alert_threshold);
+            }
           }
         } else {
           const newStock = product.stock - (item.quantity || 0);

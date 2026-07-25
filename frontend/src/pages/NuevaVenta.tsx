@@ -11,6 +11,8 @@ interface CartItem {
   pricePerKg?: number;
   kgQty?: number;
   talle?: string;
+  saleType?: 'kg' | 'bag';
+  bagQty?: number;
 }
 
 interface Product {
@@ -27,6 +29,9 @@ interface Product {
   pricePerKg?: number;
   current_kg_stock?: number;
   currentKgStock?: number;
+  bagKg?: number | null;
+  closedBagPrice?: number | null;
+  batchCount?: number;
   category: string;
   icon: string;
 }
@@ -36,6 +41,12 @@ interface Variant {
   talle: string;
   stock: number;
   price?: number | null;
+}
+
+interface Batch {
+  id: number;
+  initialKg: number;
+  remainingKg: number;
 }
 
 interface Customer {
@@ -49,6 +60,7 @@ const getPricePerKg = (p: Product) => Number(p.pricePerKg ?? p.price_per_kg ?? 0
 const getCurrentKgStock = (p: Product) => Number(p.currentKgStock ?? p.current_kg_stock ?? 0);
 const getIsBulk = (p: Product) => p.is_bulk === 1 || p.is_bulk === true || p.isBulk === 1 || p.isBulk === true;
 const getHasSizes = (p: Product) => p.has_sizes === 1 || p.has_sizes === true || p.hasSizes === 1 || p.hasSizes === true;
+const hasClosedBag = (p: Product) => !!p.bagKg && p.bagKg > 0 && !!p.closedBagPrice && p.closedBagPrice > 0;
 
 const paymentMethods = [
   { id: 'efectivo',         icon: 'payments',              label: 'Efectivo',     badge: '-10%', badgeColor: 'text-secondary' },
@@ -87,10 +99,13 @@ export default function NuevaVenta() {
 
   // Selección contextual según tipo de producto
   const [bulkSelected, setBulkSelected] = useState<Product | null>(null);
-  const [bulkMode, setBulkMode] = useState<'kg' | 'monto'>('kg');
+  const [bulkMode, setBulkMode] = useState<'kg' | 'monto' | 'bolsa'>('kg');
   const [bulkKg, setBulkKg] = useState('');
   const [bulkGrams, setBulkGrams] = useState('');
   const [montoAmount, setMontoAmount] = useState('');
+  const [bagQty, setBagQty] = useState('1');
+  const [bulkBatches, setBulkBatches] = useState<Batch[]>([]);
+  const [loadingBulkBatches, setLoadingBulkBatches] = useState(false);
 
   const [talleSelected, setTalleSelected] = useState<Product | null>(null);
   const [talleVariants, setTalleVariants] = useState<Variant[]>([]);
@@ -136,6 +151,18 @@ export default function NuevaVenta() {
     setTalleQty('1');
   }, [talleSelected, token]);
 
+  useEffect(() => {
+    if (bulkSelected && (bulkSelected.batchCount ?? 0) > 0) {
+      setLoadingBulkBatches(true);
+      apiIntegrado.getProductBatches(token, bulkSelected.id).then((data: any[]) => {
+        setBulkBatches((data || []).map(b => ({ id: b.id, initialKg: Number(b.initialKg), remainingKg: Number(b.remainingKg) })));
+        setLoadingBulkBatches(false);
+      });
+    } else {
+      setBulkBatches([]);
+    }
+  }, [bulkSelected, token]);
+
   const filteredCatalog = search.length > 1
     ? products.filter(p =>
         p.name.toLowerCase().includes(search.toLowerCase()) ||
@@ -150,6 +177,19 @@ export default function NuevaVenta() {
     ? (parseFloat(montoAmount) / (getPricePerKg(bulkSelected) || 1)) * 1000
     : null;
 
+  const bagQtyNum = Math.max(0, parseInt(bagQty) || 0);
+  const bagTotalKg = bulkSelected ? bagQtyNum * Number(bulkSelected.bagKg ?? 0) : 0;
+  const bagTotalPrice = bulkSelected ? bagQtyNum * Number(bulkSelected.closedBagPrice ?? 0) : 0;
+
+  // Si el producto ya usa bolsas individuales, el máximo real son las bolsas cerradas (intactas).
+  // Si no, se estima por el total de kilos sueltos disponibles / kilos por bolsa (comportamiento anterior).
+  const closedBatchesCount = bulkBatches.filter(b => b.remainingKg === b.initialKg).length;
+  const bagMaxQty = bulkSelected
+    ? ((bulkSelected.batchCount ?? 0) > 0
+        ? closedBatchesCount
+        : (bulkSelected.bagKg ? Math.floor(getCurrentKgStock(bulkSelected) / bulkSelected.bagKg) : 0))
+    : 0;
+
   const filteredCustomers = customerSearch.length > 0
     ? customers.filter(c => `${c.first_name} ${c.last_name}`.toLowerCase().includes(customerSearch.toLowerCase()))
     : customers;
@@ -161,7 +201,9 @@ export default function NuevaVenta() {
     setBulkKg('');
     setBulkGrams('');
     setMontoAmount('');
+    setBagQty('1');
     setBulkMode('kg');
+    setBulkBatches([]);
   };
 
   const clearTallePanel = () => {
@@ -186,6 +228,7 @@ export default function NuevaVenta() {
       setBulkKg('');
       setBulkGrams('');
       setMontoAmount('');
+      setBagQty('1');
     } else if (getHasSizes(item)) {
       clearBulkPanel();
       setTalleSelected(item);
@@ -216,6 +259,7 @@ export default function NuevaVenta() {
       isBulk: true,
       pricePerKg,
       kgQty: bulkTotalKg,
+      saleType: 'kg',
     }]);
     clearBulkPanel();
   };
@@ -232,6 +276,26 @@ export default function NuevaVenta() {
       isBulk: true,
       pricePerKg,
       kgQty,
+      saleType: 'kg',
+    }]);
+    clearBulkPanel();
+  };
+
+  const addBulkByBag = () => {
+    if (!bulkSelected || bagQtyNum <= 0 || !hasClosedBag(bulkSelected)) return;
+    if (bagQtyNum > bagMaxQty) return;
+    const kgQty = bagTotalKg;
+    const effectivePricePerKg = bagTotalPrice / kgQty;
+    setCart(prev => [...prev, {
+      id: bulkSelected.id,
+      name: `${bulkSelected.name} (bolsa cerrada x${bagQtyNum})`,
+      price: bagTotalPrice,
+      qty: 1,
+      isBulk: true,
+      pricePerKg: effectivePricePerKg,
+      kgQty,
+      saleType: 'bag',
+      bagQty: bagQtyNum,
     }]);
     clearBulkPanel();
   };
@@ -317,6 +381,8 @@ export default function NuevaVenta() {
       kgQuantity: item.isBulk ? (item.kgQty ?? 0) : 0,
       price: item.isBulk ? (item.pricePerKg ?? 0) : item.price,
       talle: item.talle || undefined,
+      saleType: item.isBulk ? (item.saleType || 'kg') : undefined,
+      bagQty: item.isBulk && item.saleType === 'bag' ? item.bagQty : undefined,
     }));
 
     const result = await apiIntegrado.createSale(token, {
@@ -420,12 +486,15 @@ export default function NuevaVenta() {
               </button>
             </div>
 
-            <div className="flex gap-sm mb-md">
+            <div className="flex gap-sm mb-md flex-wrap">
               <button onClick={() => setBulkMode('kg')} className={toggleCls(bulkMode === 'kg')}>Por Kilos/Gramos</button>
               <button onClick={() => setBulkMode('monto')} className={toggleCls(bulkMode === 'monto')}>Por Monto ($)</button>
+              {hasClosedBag(bulkSelected) && (
+                <button onClick={() => setBulkMode('bolsa')} className={toggleCls(bulkMode === 'bolsa')}>Bolsa Cerrada</button>
+              )}
             </div>
 
-            {bulkMode === 'kg' ? (
+            {bulkMode === 'kg' && (
               <div className="bg-white rounded-lg p-md border border-tertiary/20">
                 <div className="grid grid-cols-3 gap-md items-end">
                   <div>
@@ -468,7 +537,9 @@ export default function NuevaVenta() {
                   </div>
                 )}
               </div>
-            ) : (
+            )}
+
+            {bulkMode === 'monto' && (
               <div className="bg-white rounded-lg p-md border border-tertiary/20">
                 <div className="flex gap-md items-end">
                   <div className="flex-grow">
@@ -501,6 +572,56 @@ export default function NuevaVenta() {
                   >
                     Agregar al carrito
                   </button>
+                )}
+              </div>
+            )}
+
+            {bulkMode === 'bolsa' && hasClosedBag(bulkSelected) && (
+              <div className="bg-white rounded-lg p-md border border-tertiary/20">
+                <p className="text-caption text-on-surface-variant mb-sm">
+                  {fmt(Number(bulkSelected.closedBagPrice))} por bolsa cerrada de {Number(bulkSelected.bagKg).toFixed(2)} kg
+                  {' '}({fmt(Number(bulkSelected.closedBagPrice) / Number(bulkSelected.bagKg))}/kg)
+                </p>
+                {loadingBulkBatches ? (
+                  <p className="text-caption text-on-surface-variant">Consultando bolsas disponibles...</p>
+                ) : (
+                  <>
+                    <p className="text-caption text-on-surface-variant mb-sm">
+                      Bolsas cerradas disponibles: <strong>{bagMaxQty}</strong>
+                    </p>
+                    <div className="grid grid-cols-3 gap-md items-end">
+                      <div>
+                        <label className="block text-caption text-on-surface-variant mb-xs">Cantidad de bolsas</label>
+                        <input
+                          className="w-full px-md py-2 border border-outline-variant rounded-lg text-body-md font-bold text-right"
+                          type="number"
+                          min="1"
+                          max={bagMaxQty || undefined}
+                          value={bagQty}
+                          onChange={e => setBagQty(e.target.value)}
+                        />
+                      </div>
+                      <div className="col-span-2">
+                        <button
+                          onClick={addBulkByBag}
+                          disabled={bagQtyNum <= 0 || bagQtyNum > bagMaxQty}
+                          className="w-full py-2 bg-tertiary text-white rounded-lg font-bold flex items-center justify-center gap-xs hover:opacity-90 transition-all shadow-sm active:scale-95 disabled:opacity-40"
+                        >
+                          <span className="material-symbols-outlined">add</span>
+                          Añadir {bagQtyNum > 1 ? `${bagQtyNum} bolsas` : '1 bolsa'}
+                        </button>
+                      </div>
+                    </div>
+                    {bagQtyNum > 0 && (
+                      <div className="mt-sm flex justify-between text-caption text-on-surface-variant">
+                        <span>Total: {bagTotalKg.toFixed(2)} kg</span>
+                        <span className="font-bold text-tertiary">{fmt(bagTotalPrice)}</span>
+                      </div>
+                    )}
+                    {bagQtyNum > bagMaxQty && (
+                      <p className="text-caption text-error font-bold mt-xs">No hay suficientes bolsas cerradas disponibles.</p>
+                    )}
+                  </>
                 )}
               </div>
             )}
@@ -601,7 +722,7 @@ export default function NuevaVenta() {
             ) : (
               <div className="divide-y divide-outline-variant/10">
                 {cart.map(item => (
-                  <div key={`${item.id}-${item.talle || 'base'}`} className="px-md py-sm flex items-center gap-sm">
+                  <div key={`${item.id}-${item.talle || 'base'}-${item.saleType || ''}`} className="px-md py-sm flex items-center gap-sm">
                     <div className="flex-grow min-w-0">
                       <p className="text-label-md font-bold truncate">{item.name}</p>
                       {item.isBulk && item.pricePerKg && item.kgQty ? (

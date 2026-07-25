@@ -13,14 +13,20 @@ interface NormalForm {
   initialStock: string;
 }
 
+interface BagRow {
+  id: string;
+  remainingKg: string;
+}
+
 interface PesoForm {
   name: string;
   sku: string;
   category: string;
-  bolsaPrice: string;
-  costPerKg: string;
-  profitPerKgPercent: string;
+  bagCost: string;
   kgPerBolsa: string;
+  profitPerKgPercent: string;
+  profitClosedBagPercent: string;
+  bags: BagRow[];
 }
 
 interface SizeRow {
@@ -42,7 +48,12 @@ interface TalleForm {
 }
 
 const EMPTY_NORMAL: NormalForm = { name: '', sku: '', category: '', purchasePrice: '', profitPercent: '', initialStock: '' };
-const EMPTY_PESO: PesoForm = { name: '', sku: '', category: '', bolsaPrice: '', costPerKg: '', profitPerKgPercent: '', kgPerBolsa: '' };
+
+const newBagRow = (kgPerBolsa: string): BagRow => ({ id: crypto.randomUUID(), remainingKg: kgPerBolsa });
+const createEmptyPeso = (): PesoForm => ({
+  name: '', sku: '', category: '', bagCost: '', kgPerBolsa: '', profitPerKgPercent: '', profitClosedBagPercent: '',
+  bags: [],
+});
 
 const newSizeRow = (): SizeRow => ({ id: crypto.randomUUID(), talle: '', stock: '', costo: '', gananciaPercent: '', price: '' });
 const createEmptyTalle = (): TalleForm => ({ name: '', sku: '', category: '', purchasePrice: '', profitPercent: '', sizes: [newSizeRow()] });
@@ -57,12 +68,16 @@ function suggestedPrice(row: SizeRow, generalCost: string, generalPct: string): 
   return null;
 }
 
+function fmtMoney(n: number): string {
+  return `$${n.toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
 export default function CargarProducto() {
   const { token } = useAuth();
   const [tab, setTab] = useState<ProductTab>('normal');
   const [categories, setCategories] = useState<string[]>([]);
   const [normalForm, setNormalForm] = useState<NormalForm>(EMPTY_NORMAL);
-  const [pesoForm, setPesoForm] = useState<PesoForm>(EMPTY_PESO);
+  const [pesoForm, setPesoForm] = useState<PesoForm>(createEmptyPeso());
   const [talleForm, setTalleForm] = useState<TalleForm>(createEmptyTalle());
   const [showToast, setShowToast] = useState(false);
   const [toastMsg, setToastMsg] = useState('Producto guardado con éxito');
@@ -76,9 +91,18 @@ export default function CargarProducto() {
   const salePrice = cost > 0 && pct > 0 ? cost * (1 + pct / 100) : null;
 
   // Peso form derived values
-  const costKg = parseFloat(pesoForm.costPerKg) || 0;
+  const bagCostNum = parseFloat(pesoForm.bagCost) || 0;
+  const kgPerBolsaNum = parseFloat(pesoForm.kgPerBolsa) || 0;
+  const costPerKg = bagCostNum > 0 && kgPerBolsaNum > 0 ? bagCostNum / kgPerBolsaNum : 0;
+  const totalInitialKg = pesoForm.bags.reduce((acc, b) => acc + (parseFloat(b.remainingKg) || 0), 0);
+
   const profitKgPct = parseFloat(pesoForm.profitPerKgPercent) || 0;
-  const salePriceKg = costKg > 0 && profitKgPct > 0 ? costKg * (1 + profitKgPct / 100) : null;
+  const salePriceKg = costPerKg > 0 && profitKgPct > 0 ? costPerKg * (1 + profitKgPct / 100) : null;
+
+  const profitClosedBagPct = parseFloat(pesoForm.profitClosedBagPercent) || 0;
+  const closedBagPrice = bagCostNum > 0 && profitClosedBagPct > 0
+    ? bagCostNum * (1 + profitClosedBagPct / 100)
+    : null;
 
   // Talle form derived values
   const totalStockTalle = talleForm.sizes.reduce((acc, s) => acc + (parseInt(s.stock) || 0), 0);
@@ -94,8 +118,14 @@ export default function CargarProducto() {
   const changeNormal = (field: keyof NormalForm) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
     setNormalForm(prev => ({ ...prev, [field]: e.target.value }));
 
-  const changePeso = (field: keyof PesoForm) => (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
-    setPesoForm(prev => ({ ...prev, [field]: e.target.value }));
+  const changePeso = (field: 'name' | 'sku' | 'category' | 'bagCost' | 'kgPerBolsa' | 'profitPerKgPercent' | 'profitClosedBagPercent') =>
+    (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
+      setPesoForm(prev => ({ ...prev, [field]: e.target.value }));
+
+  const addBagRow = () => setPesoForm(prev => ({ ...prev, bags: [...prev.bags, newBagRow(prev.kgPerBolsa)] }));
+  const removeBagRow = (id: string) => setPesoForm(prev => ({ ...prev, bags: prev.bags.filter(b => b.id !== id) }));
+  const updateBagRow = (id: string, value: string) =>
+    setPesoForm(prev => ({ ...prev, bags: prev.bags.map(b => b.id === id ? { ...b, remainingKg: value } : b) }));
 
   const changeTalle = (field: 'name' | 'sku' | 'category' | 'purchasePrice' | 'profitPercent') =>
     (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) =>
@@ -147,6 +177,10 @@ export default function CargarProducto() {
 
   const handlePesoSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (pesoForm.bags.length === 0) {
+      showNotification('Agregá al menos una bolsa con su stock', true);
+      return;
+    }
     setLoading(true);
     try {
       const result = await apiIntegrado.createProduct(token, {
@@ -158,13 +192,16 @@ export default function CargarProducto() {
         maxStock: 0,
         icon: 'nutrition',
         isBulk: true,
-        pricePerKg: salePriceKg ?? costKg,
-        initialKgStock: parseFloat(pesoForm.kgPerBolsa) || 0,
+        pricePerKg: salePriceKg ?? costPerKg,
+        initialKgStock: totalInitialKg,
+        bagKg: kgPerBolsaNum || null,
+        closedBagPrice: closedBagPrice ?? null,
+        bags: pesoForm.bags.map(b => ({ remainingKg: parseFloat(b.remainingKg) || 0 })),
       });
 
       if (result) {
         showNotification('Producto por peso guardado con éxito');
-        setPesoForm(EMPTY_PESO);
+        setPesoForm(createEmptyPeso());
       } else {
         showNotification('Error al guardar el producto', true);
       }
@@ -228,13 +265,12 @@ export default function CargarProducto() {
   const handleDiscard = () => {
     if (confirm('¿Está seguro de descartar los cambios?')) {
       if (tab === 'normal') setNormalForm(EMPTY_NORMAL);
-      else if (tab === 'peso') setPesoForm(EMPTY_PESO);
+      else if (tab === 'peso') setPesoForm(createEmptyPeso());
       else setTalleForm(createEmptyTalle());
     }
   };
 
   const inputCls = 'w-full bg-background border border-secondary/20 rounded-lg p-base text-body-md focus:outline-none focus:border-primary focus:ring-2 focus:ring-primary/10 focus:bg-tertiary-fixed/10 transition-all';
-  const inputSmCls = 'w-full bg-background border border-secondary/20 rounded-lg p-xs text-caption focus:outline-none focus:border-primary focus:ring-2 focus:ring-primary/10 transition-all';
 
   const categorySelect = (value: string, onChange: (e: React.ChangeEvent<HTMLSelectElement>) => void) => (
     <select className={inputCls + ' appearance-none'} value={value} onChange={onChange}>
@@ -407,39 +443,107 @@ export default function CargarProducto() {
 
               <div className="col-span-1 md:col-span-2 pt-base">
                 <div className="border-l-4 border-tertiary pl-base mb-base">
-                  <h3 className="text-label-md font-bold text-tertiary uppercase tracking-wider">Gestión de Precios por Peso</h3>
+                  <h3 className="text-label-md font-bold text-tertiary uppercase tracking-wider">Costo de la Bolsa</h3>
                 </div>
               </div>
 
               <div className="space-y-base bg-surface-container/30 p-base rounded-lg border border-outline-variant/10">
-                <label className="block text-label-md font-bold text-on-surface-variant">Precio de Bolsa</label>
-                <p className="text-caption text-on-surface-variant">Precio de compra de la bolsa completa.</p>
+                <label className="block text-label-md font-bold text-on-surface-variant">Costo de la Bolsa</label>
+                <p className="text-caption text-on-surface-variant">Lo que pagaste por cada bolsa (según tu factura de compra).</p>
                 <div className="relative">
                   <span className="absolute left-base top-1/2 -translate-y-1/2 text-on-surface-variant font-bold">$</span>
-                  <input className={inputCls + ' pl-8'} placeholder="0.00" required step="0.01" type="number" min="0" value={pesoForm.bolsaPrice} onChange={changePeso('bolsaPrice')} />
+                  <input className={inputCls + ' pl-8'} placeholder="0.00" required step="0.01" type="number" min="0" value={pesoForm.bagCost} onChange={changePeso('bagCost')} />
                 </div>
               </div>
 
               <div className="space-y-base bg-surface-container/30 p-base rounded-lg border border-outline-variant/10">
-  <label className="block text-label-md font-bold text-on-surface-variant">Kilos por Bolsa</label>
-  <p className="text-caption text-on-surface-variant">Cantidad de kilos que trae la bolsa.</p>
-  <div className="relative">
-    <span className="absolute left-base top-1/2 -translate-y-1/2 text-on-surface-variant font-bold">kg</span>
-    <input className={inputCls + ' pl-8'} placeholder="0.00" required step="0.01" type="number" min="0" value={pesoForm.kgPerBolsa} onChange={changePeso('kgPerBolsa')} />
-  </div>
-</div>
-
-              <div className="space-y-base bg-surface-container/30 p-base rounded-lg border border-outline-variant/10">
-                <label className="block text-label-md font-bold text-on-surface-variant">Costo por Kilo</label>
-                <p className="text-caption text-on-surface-variant">Costo calculado por kilogramo.</p>
+                <label className="block text-label-md font-bold text-on-surface-variant">Kilos por Bolsa</label>
+                <p className="text-caption text-on-surface-variant">Cantidad de kilos que trae cada bolsa cerrada.</p>
                 <div className="relative">
-                  <span className="absolute left-base top-1/2 -translate-y-1/2 text-on-surface-variant font-bold">$</span>
-                  <input className={inputCls + ' pl-8'} placeholder="0.00" required step="0.01" type="number" min="0" value={pesoForm.costPerKg} onChange={changePeso('costPerKg')} />
+                  <span className="absolute left-base top-1/2 -translate-y-1/2 text-on-surface-variant font-bold">kg</span>
+                  <input className={inputCls + ' pl-8'} placeholder="0.00" required step="0.01" type="number" min="0" value={pesoForm.kgPerBolsa} onChange={changePeso('kgPerBolsa')} />
+                </div>
+              </div>
+
+              <div className="col-span-1 md:col-span-2 bg-background border border-outline-variant/20 rounded-lg p-base flex items-center justify-between">
+                <span className="text-label-md font-bold text-on-surface-variant">Costo por Kilo (calculado)</span>
+                <span className="text-headline-sm font-bold text-primary">
+                  {costPerKg > 0 ? fmtMoney(costPerKg) : '—'}
+                </span>
+              </div>
+
+              <div className="col-span-1 md:col-span-2 pt-base">
+                <div className="border-l-4 border-tertiary pl-base mb-base flex items-center justify-between">
+                  <h3 className="text-label-md font-bold text-tertiary uppercase tracking-wider">Bolsas y Stock</h3>
+                  {totalInitialKg > 0 && (
+                    <span className="text-caption text-on-surface-variant font-bold">Stock total: {totalInitialKg.toFixed(2)} kg</span>
+                  )}
+                </div>
+                <p className="text-caption text-on-surface-variant mb-base">
+                  Agregá una fila por cada bolsa que tengas en stock ahora. Si alguna ya está empezada, cambiale los kilos restantes.
+                </p>
+              </div>
+
+              <div className="col-span-1 md:col-span-2 space-y-xs">
+                {pesoForm.bags.length === 0 ? (
+                  <p className="text-caption text-on-surface-variant italic">Todavía no agregaste ninguna bolsa.</p>
+                ) : (
+                  pesoForm.bags.map(b => {
+                    const isClosed = kgPerBolsaNum > 0 && parseFloat(b.remainingKg) === kgPerBolsaNum;
+                    return (
+                      <div key={b.id} className="flex items-center gap-sm bg-white p-sm rounded-lg border border-tertiary/20">
+                        <span className={`px-sm py-xs text-caption font-bold rounded-full flex-shrink-0 ${
+                          isClosed ? 'bg-primary/10 text-primary' : 'bg-tertiary/10 text-tertiary'
+                        }`}>
+                          {isClosed ? 'Cerrada' : 'Abierta'}
+                        </span>
+                        <input
+                          className={inputCls + ' flex-1'}
+                          type="number"
+                          min={0}
+                          step={0.001}
+                          max={kgPerBolsaNum || undefined}
+                          value={b.remainingKg}
+                          onChange={e => updateBagRow(b.id, e.target.value)}
+                        />
+                        <span className="text-caption text-on-surface-variant flex-shrink-0">
+                          / {kgPerBolsaNum > 0 ? kgPerBolsaNum.toFixed(2) : '?'} kg
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => removeBagRow(b.id)}
+                          className="w-9 h-9 flex-shrink-0 rounded-lg border border-error/30 text-error flex items-center justify-center hover:bg-error-container/20 transition-all"
+                        >
+                          <span className="material-symbols-outlined" style={{ fontSize: '18px' }}>close</span>
+                        </button>
+                      </div>
+                    );
+                  })
+                )}
+
+                <button
+                  type="button"
+                  onClick={addBagRow}
+                  disabled={!pesoForm.kgPerBolsa}
+                  className="w-full py-sm rounded-lg border-2 border-dashed border-tertiary/30 text-tertiary font-bold text-label-md flex items-center justify-center gap-xs hover:bg-tertiary/5 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  <span className="material-symbols-outlined" style={{ fontSize: '18px' }}>add</span>
+                  Agregar bolsa
+                </button>
+                {!pesoForm.kgPerBolsa && (
+                  <p className="text-caption text-on-surface-variant">Completá "Kilos por Bolsa" arriba para poder agregar bolsas.</p>
+                )}
+              </div>
+
+              <div className="col-span-1 md:col-span-2 pt-base">
+                <div className="border-l-4 border-primary pl-base mb-base">
+                  <h3 className="text-label-md font-bold text-primary uppercase tracking-wider">Gestión de Precios</h3>
                 </div>
               </div>
 
               <div className="col-span-1 md:col-span-2 space-y-base bg-secondary-container/10 p-base rounded-lg border border-secondary/10">
-                <label className="block text-label-md font-bold text-primary">Ganancia por Kilo (%)</label>
+                <label className="block text-label-md font-bold text-primary">Ganancia por Kilo Suelto (%)</label>
+                <p className="text-caption text-on-surface-variant">Se usa cuando el cliente se lleva la mercadería fraccionada (por kilos/gramos o por monto). Se calcula sobre el costo por kilo.</p>
                 <div className="flex gap-sm items-stretch">
                   <div className="relative flex-grow">
                     <input className={inputCls + ' pr-8 font-bold'} placeholder="0" step="0.5" type="number" min="0" value={pesoForm.profitPerKgPercent} onChange={changePeso('profitPerKgPercent')} />
@@ -448,10 +552,32 @@ export default function CargarProducto() {
                   <div className={`flex-grow flex items-center justify-between bg-background border rounded-lg px-base transition-all ${salePriceKg ? 'border-primary/40 bg-secondary-container/20' : 'border-secondary/20 opacity-50'}`}>
                     <span className="text-caption text-on-surface-variant font-bold">Precio Venta / kg</span>
                     <span className="text-body-md font-bold text-primary">
-                      {salePriceKg ? `$${salePriceKg.toLocaleString('es-AR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '—'}
+                      {salePriceKg ? fmtMoney(salePriceKg) : '—'}
                     </span>
                   </div>
                 </div>
+              </div>
+
+              <div className="col-span-1 md:col-span-2 space-y-base bg-primary/5 p-base rounded-lg border border-primary/20">
+                <label className="block text-label-md font-bold text-primary">Ganancia Bolsa Cerrada (%)</label>
+                <p className="text-caption text-on-surface-variant">Se usa cuando el cliente se lleva la bolsa entera sin abrir. Se calcula sobre el costo de una bolsa (no sobre el costo por kilo). Suele ser más baja que la de kilo suelto.</p>
+                <div className="flex gap-sm items-stretch">
+                  <div className="relative flex-grow">
+                    <input className={inputCls + ' pr-8 font-bold'} placeholder="0" step="0.5" type="number" min="0" value={pesoForm.profitClosedBagPercent} onChange={changePeso('profitClosedBagPercent')} />
+                    <span className="absolute right-base top-1/2 -translate-y-1/2 text-primary font-bold">%</span>
+                  </div>
+                  <div className={`flex-grow flex items-center justify-between bg-background border rounded-lg px-base transition-all ${closedBagPrice ? 'border-primary/40 bg-primary/10' : 'border-outline-variant/20 opacity-50'}`}>
+                    <span className="text-caption text-on-surface-variant font-bold">Precio Bolsa Cerrada</span>
+                    <span className="text-body-md font-bold text-primary">
+                      {closedBagPrice ? fmtMoney(closedBagPrice) : '—'}
+                    </span>
+                  </div>
+                </div>
+                {closedBagPrice && kgPerBolsaNum > 0 && (
+                  <p className="text-caption text-on-surface-variant">
+                    Equivale a {fmtMoney(closedBagPrice / kgPerBolsaNum)}/kg vendiendo la bolsa entera, contra {salePriceKg ? fmtMoney(salePriceKg) : '—'}/kg vendiendo suelto.
+                  </p>
+                )}
               </div>
             </div>
 
