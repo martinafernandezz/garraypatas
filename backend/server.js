@@ -482,7 +482,7 @@ app.put('/api/products/:id/variants', verifyToken, async (req, res) => {
 
 app.put('/api/products/:id', verifyToken, async (req, res) => {
   try {
-const { name, sku, category, stock, maxStock, price, icon, isBulk, pricePerKg, initialKgStock, alertThreshold, hasSizes, sizes, bagKg, closedBagPrice, bags } = req.body;    
+const { name, sku, category, stock, maxStock, price, icon, isBulk, pricePerKg, initialKgStock, currentKgStock, alertThreshold, hasSizes, sizes, bagKg, closedBagPrice, bags } = req.body;
     const connection = await pool.getConnection();
     const [categories] = await connection.query('SELECT id FROM categories WHERE name = ?', [category]);
     if (categories.length === 0) {
@@ -509,7 +509,7 @@ const { name, sku, category, stock, maxStock, price, icon, isBulk, pricePerKg, i
 
 app.post('/api/products', verifyToken, async (req, res) => {
   try {
-const { name, sku, category, stock, maxStock, price, icon, isBulk, pricePerKg, initialKgStock, alertThreshold, hasSizes, sizes, bagKg, closedBagPrice, bagQty } = req.body;
+const { name, sku, category, stock, maxStock, price, icon, isBulk, pricePerKg, initialKgStock, alertThreshold, hasSizes, sizes, bagKg, closedBagPrice, bags } = req.body;
     if (!name || !sku || !category || (price === undefined || price === null)) {
       return res.status(400).json({ error: 'Campos requeridos: name, sku, category, price' });
     }
